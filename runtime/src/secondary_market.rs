@@ -1,4 +1,5 @@
-use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result};
+use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result,
+	ensure, StorageMap};
 use system::ensure_signed;
 
 pub trait Trait: balances::Trait {
@@ -16,13 +17,16 @@ decl_storage! {
 		IssuedShares get(issued_shares): map T::AccountId => u64;
 
 		/// The state in which the Account (company) is allowed to issue shares or not
-		IsAllowedIssue get(is_allowed_issue): map T::AccountId => bool;
+		IsAllowedIssue get(is_allowed_issue): map T::AccountId => bool = false;
 
-		/// The number of shares of the company the given Account owns (parameters are Issuer, Holder)
+		/// The number of shares of the company the given Account owns (parameters: Issuer, Holder)
 		OwnedShares get(owned_shares): map (T::AccountId, T::AccountId) => u64;
 
 		/// The last traded price of the given company's share
 		LastBidPrice get(last_bid_price): map T::AccountId => T::Balance;
+
+		/// The maximum shares the given company can issue
+		MaxShare get(max_share): map T::AccountId => u64;
 	}
 }
 
@@ -37,6 +41,23 @@ decl_module! {
 			<Something<T>>::put(something);
 
 			Self::deposit_event(RawEvent::SomethingStored(something, who));
+			Ok(())
+		}
+
+		pub fn give_issue_rights(origin, firm: T::AccountId, share_limit: u64) -> Result {
+			// todo: make this ensure that origin is root
+			let sender = ensure_signed(origin)?;
+
+			ensure!(sender != firm, "you cannot give rights to yourself");
+
+			let firm_state = Self::is_allowed_issue(firm.clone());
+			ensure!(firm_state == false, "the firm is already allowed to issue shares");
+			ensure!(share_limit > 0, "the value must be greater than 0");
+
+			<IsAllowedIssue<T>>::insert(firm.clone(), true);
+			<MaxShare<T>>::insert(firm, share_limit);
+
+
 			Ok(())
 		}
 	}
