@@ -13,7 +13,7 @@ decl_storage! {
 		IssuerArray get(issuer_array): map u64 => T::AccountId;
 
 		/// The number of share that a given Account (company) has issued
-		IssuedShares get(issued_shares): map T::AccountId => u64;
+		TotalIssuedShares get(total_issued_shares): map T::AccountId => u64;
 
 		/// The state in which the Account (company) is allowed to issue shares or not
 		IsAllowedIssue get(is_allowed_issue): map T::AccountId => bool = false;
@@ -41,10 +41,18 @@ decl_module! {
 
 			let firm_state = Self::is_allowed_issue(firm.clone());
 			ensure!(firm_state == false, "the firm is already allowed to issue shares");
-			ensure!(share_limit > 0, "the value must be greater than 0");
+
+			let current_share_lim = Self::max_share(firm.clone());
+
+			// only add the given share limit when the current limit is 0
+			if current_share_lim == 0 {
+				// make sure the new limit value is more than 0
+				ensure!(share_limit > 0, "the value must be greater than 0");
+
+				<MaxShare<T>>::insert(firm.clone(), share_limit);
+			}
 
 			<IsAllowedIssue<T>>::insert(firm.clone(), true);
-			<MaxShare<T>>::insert(firm.clone(), share_limit);
 
 			Self::deposit_event(RawEvent::GaveIssueRight(firm, share_limit));
 

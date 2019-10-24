@@ -55,9 +55,7 @@ pub type BlockNumber = u64;
 /// Index of an account's extrinsic in the chain.
 pub type Nonce = u64;
 
-/// Used for the module template in `./template.rs`
-mod template;
-
+/// The secondary market for trading shares
 mod secondary_market;
 
 /// Opaque types. These are used by the CLI to instantiate machinery that don't need to know
@@ -189,11 +187,6 @@ impl sudo::Trait for Runtime {
 	type Proposal = Call;
 }
 
-/// Used for the module template in `./template.rs`
-impl template::Trait for Runtime {
-	type Event = Event;
-}
-
 impl secondary_market::Trait for Runtime {
 	type Event = Event;
 }
@@ -211,8 +204,6 @@ construct_runtime!(
 		Indices: indices,
 		Balances: balances,
 		Sudo: sudo,
-		// Used for the module template in `./template.rs`
-		TemplateModule: template::{Module, Call, Storage, Event<T>},
 
 		SecondaryMarket: secondary_market::{Module, Call, Storage, Event<T>},
 	}
