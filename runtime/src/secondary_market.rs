@@ -10,7 +10,8 @@ pub trait Trait: system::Trait {
 decl_storage! {
 	trait Store for Module<T: Trait> as SecondaryMarket {
 		Something get(something): Option<u32>;
-        Theum get(tetsting): Hello;
+		IssuerArray get(issuer_array): map u64 => T::AccountId;
+		IsAllowedIssue get(is_allowed_issue): map T::AccountId => bool;
 	}
 }
 
@@ -28,11 +29,16 @@ decl_module! {
 			Self::deposit_event(RawEvent::SomethingStored(something, who));
 			Ok(())
 		}
+
+
 	}
 }
 
 decl_event!(
-	pub enum Event<T> where AccountId = <T as system::Trait>::AccountId {
-		SomethingStored(u32, AccountId),
+	pub enum Event<T> where 
+		AccountId = <T as system::Trait>::AccountId {
+
+			SomethingStored(u32, AccountId),
+			
 	}
 );
