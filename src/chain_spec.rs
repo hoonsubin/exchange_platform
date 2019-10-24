@@ -1,11 +1,11 @@
-use primitives::{Pair, Public};
+use primitives::{ed25519, sr25519, Pair};
 use exchange_platform_runtime::{
-	AccountId, AuraConfig, BalancesConfig, GenesisConfig, GrandpaConfig,
-	SudoConfig, IndicesConfig, SystemConfig, WASM_BINARY, 
+	AccountId, GenesisConfig, ConsensusConfig, TimestampConfig, BalancesConfig,
+	SudoConfig, IndicesConfig,
 };
-use aura_primitives::sr25519::{AuthorityId as AuraId};
-use grandpa_primitives::{AuthorityId as GrandpaId};
 use substrate_service;
+
+use ed25519::Public as AuthorityId;
 
 // Note this is the URL for the telemetry server
 //const STAGING_TELEMETRY_URL: &str = "wss://telemetry.polkadot.io/submit/";
@@ -24,19 +24,16 @@ pub enum Alternative {
 	LocalTestnet,
 }
 
-/// Helper function to generate a crypto pair from seed
-pub fn get_from_seed<TPublic: Public>(seed: &str) -> <TPublic::Pair as Pair>::Public {
-	TPublic::Pair::from_string(&format!("//{}", seed), None)
+fn authority_key(s: &str) -> AuthorityId {
+	ed25519::Pair::from_string(&format!("//{}", s), None)
 		.expect("static values are valid; qed")
 		.public()
 }
 
-/// Helper function to generate an authority key for Aura
-pub fn get_authority_keys_from_seed(s: &str) -> (AuraId, GrandpaId) { 
-	(
-		get_from_seed::<AuraId>(s),
-		get_from_seed::<GrandpaId>(s),
-	)
+fn account_key(s: &str) -> AccountId {
+	sr25519::Pair::from_string(&format!("//{}", s), None)
+		.expect("static values are valid; qed")
+		.public()
 }
 
 impl Alternative {
@@ -47,16 +44,12 @@ impl Alternative {
 				"Development",
 				"dev",
 				|| testnet_genesis(vec![
-					get_authority_keys_from_seed("Alice"),
+					authority_key("Alice")
+				], vec![
+					account_key("Alice")
 				],
-				get_from_seed::<AccountId>("Alice"),
-				vec![
-					get_from_seed::<AccountId>("Alice"),
-					get_from_seed::<AccountId>("Bob"),
-					get_from_seed::<AccountId>("Alice//stash"),
-					get_from_seed::<AccountId>("Bob//stash"),
-				],
-				true),
+					account_key("Alice")
+				),
 				vec![],
 				None,
 				None,
@@ -67,25 +60,18 @@ impl Alternative {
 				"Local Testnet",
 				"local_testnet",
 				|| testnet_genesis(vec![
-					get_authority_keys_from_seed("Alice"),
-					get_authority_keys_from_seed("Bob"),
-				], 
-				get_from_seed::<AccountId>("Alice"),
-				vec![
-					get_from_seed::<AccountId>("Alice"),
-					get_from_seed::<AccountId>("Bob"),
-					get_from_seed::<AccountId>("Charlie"),
-					get_from_seed::<AccountId>("Dave"),
-					get_from_seed::<AccountId>("Eve"),
-					get_from_seed::<AccountId>("Ferdie"),
-					get_from_seed::<AccountId>("Alice//stash"),
-					get_from_seed::<AccountId>("Bob//stash"),
-					get_from_seed::<AccountId>("Charlie//stash"),
-					get_from_seed::<AccountId>("Dave//stash"),
-					get_from_seed::<AccountId>("Eve//stash"),
-					get_from_seed::<AccountId>("Ferdie//stash"),
+					authority_key("Alice"),
+					authority_key("Bob"),
+				], vec![
+					account_key("Alice"),
+					account_key("Bob"),
+					account_key("Charlie"),
+					account_key("Dave"),
+					account_key("Eve"),
+					account_key("Ferdie"),
 				],
-				true),
+					account_key("Alice"),
+				),
 				vec![],
 				None,
 				None,
@@ -104,30 +90,30 @@ impl Alternative {
 	}
 }
 
-fn testnet_genesis(initial_authorities: Vec<(AuraId, GrandpaId)>,
-	root_key: AccountId, 
-	endowed_accounts: Vec<AccountId>,
-	_enable_println: bool) -> GenesisConfig {
+fn testnet_genesis(initial_authorities: Vec<AuthorityId>, endowed_accounts: Vec<AccountId>, root_key: AccountId) -> GenesisConfig {
 	GenesisConfig {
-		system: Some(SystemConfig {
-			code: WASM_BINARY.to_vec(),
-			changes_trie_config: Default::default(),
+		consensus: Some(ConsensusConfig {
+			code: include_bytes!("../runtime/wasm/target/wasm32-unknown-unknown/release/exchange_platform_runtime_wasm.compact.wasm").to_vec(),
+			authorities: initial_authorities.clone(),
+		}),
+		system: None,
+		timestamp: Some(TimestampConfig {
+			minimum_period: 5, // 10 second block time.
 		}),
 		indices: Some(IndicesConfig {
 			ids: endowed_accounts.clone(),
 		}),
 		balances: Some(BalancesConfig {
+			transaction_base_fee: 1,
+			transaction_byte_fee: 0,
+			existential_deposit: 500,
+			transfer_fee: 0,
+			creation_fee: 0,
 			balances: endowed_accounts.iter().cloned().map(|k|(k, 1 << 60)).collect(),
 			vesting: vec![],
 		}),
 		sudo: Some(SudoConfig {
 			key: root_key,
-		}),
-		aura: Some(AuraConfig {
-			authorities: initial_authorities.iter().map(|x| (x.0.clone())).collect(),
-		}),
-		grandpa: Some(GrandpaConfig {
-			authorities: initial_authorities.iter().map(|x| (x.1.clone(), 1)).collect(),
 		}),
 	}
 }

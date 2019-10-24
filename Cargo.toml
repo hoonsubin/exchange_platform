@@ -1,70 +1,37 @@
-[[bin]]
-name = 'exchange-platform'
-path = 'src/main.rs'
-
-[package]
-authors = ['Hoon Kim']
-build = 'build.rs'
-edition = '2018'
-name = 'exchange-platform'
-version = '2.0.0'
-
-[build-dependencies]
-vergen = '3.0.4'
-[profile.release]
-panic = 'unwind'
-
 [dependencies]
-derive_more = '0.15.0'
-exit-future = '0.1.4'
-futures = '0.1.29'
-log = '0.4.8'
-parking_lot = '0.9.0'
-tokio = '0.1.22'
-trie-root = '0.15.2'
-
-[dependencies.aura]
-git = 'https://github.com/paritytech/substrate.git'
-package = 'substrate-consensus-aura'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
-
-[dependencies.aura-primitives]
-git = 'https://github.com/paritytech/substrate.git'
-package = 'substrate-consensus-aura-primitives'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+error-chain = '0.12'
+exit-future = '0.1'
+futures = '0.1'
+hex-literal = '0.1'
+log = '0.4'
+parity-codec = '3.2'
+parking_lot = '0.7.1'
+tokio = '0.1'
+trie-root = '0.12.0'
 
 [dependencies.basic-authorship]
 git = 'https://github.com/paritytech/substrate.git'
 package = 'substrate-basic-authorship'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
-[dependencies.codec]
-package = 'parity-scale-codec'
-version = '1.0.0'
+[dependencies.consensus]
+git = 'https://github.com/paritytech/substrate.git'
+package = 'substrate-consensus-aura'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.ctrlc]
 features = ['termination']
-version = '3.1.3'
-
-[dependencies.grandpa]
-git = 'https://github.com/paritytech/substrate.git'
-package = 'substrate-finality-grandpa'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
-
-[dependencies.grandpa-primitives]
-git = 'https://github.com/paritytech/substrate.git'
-package = 'substrate-finality-grandpa-primitives'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+version = '3.0'
 
 [dependencies.inherents]
 git = 'https://github.com/paritytech/substrate.git'
 package = 'substrate-inherents'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.network]
 git = 'https://github.com/paritytech/substrate.git'
 package = 'substrate-network'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.exchange-platform-runtime]
 path = 'runtime'
@@ -72,32 +39,45 @@ path = 'runtime'
 [dependencies.primitives]
 git = 'https://github.com/paritytech/substrate.git'
 package = 'substrate-primitives'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.sr-io]
 git = 'https://github.com/paritytech/substrate.git'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.substrate-cli]
 git = 'https://github.com/paritytech/substrate.git'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.substrate-client]
 git = 'https://github.com/paritytech/substrate.git'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.substrate-executor]
 git = 'https://github.com/paritytech/substrate.git'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.substrate-service]
 git = 'https://github.com/paritytech/substrate.git'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
 [dependencies.transaction-pool]
 git = 'https://github.com/paritytech/substrate.git'
 package = 'substrate-transaction-pool'
-rev = 'd1cd01c74e8d5550396cb654f9a3f1b641efdf4c'
+rev = 'cc1d67e973fd02c0c997b164ba516cf041bf21f1'
 
-[workspace]
-members = ['runtime']
+[[bin]]
+name = 'exchange-platform'
+path = 'src/main.rs'
+
+[build-dependencies]
+vergen = '3'
+[profile.release]
+panic = 'unwind'
+
+[package]
+authors = ['Parity Technologies <admin@parity.io>']
+build = 'build.rs'
+edition = '2018'
+name = 'exchange-platform'
+version = '1.0.0'
