@@ -10,7 +10,7 @@ decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
 		Something get(something): Option<u32>;
 
-		/// The array of Accounts that have issued a share
+		/// The array of Accounts that have issued a share. This will only be populated when the Account starts to issue shares
 		IssuerArray get(issuer_array): map u64 => T::AccountId;
 
 		/// The number of share that a given Account (company) has issued
@@ -57,6 +57,18 @@ decl_module! {
 			<IsAllowedIssue<T>>::insert(firm.clone(), true);
 			<MaxShare<T>>::insert(firm, share_limit);
 
+			Ok(())
+		}
+
+		pub fn revoke_issue_rights(origin, firm: T::AccountId) -> Result {
+			// todo: make this ensure that origin is root
+			let sender = ensure_signed(origin)?;
+			ensure!(sender != firm, "you cannot take rights to yourself");
+
+			let firm_state = Self::is_allowed_issue(firm.clone());
+			ensure!(firm_state == true, "the firm is already not allowed to issue shares");
+
+			<IsAllowedIssue<T>>::insert(firm.clone(), false);
 
 			Ok(())
 		}
