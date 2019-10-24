@@ -8,7 +8,6 @@ pub trait Trait: balances::Trait {
 
 decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
-		Something get(something): Option<u32>;
 
 		/// The array of Accounts that have issued a share. This will only be populated when the Account starts to issue shares
 		IssuerArray get(issuer_array): map u64 => T::AccountId;
@@ -34,16 +33,6 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
-		pub fn do_something(origin, something: u32) -> Result {
-
-			let who = ensure_signed(origin)?;
-
-			<Something<T>>::put(something);
-
-			Self::deposit_event(RawEvent::SomethingStored(something, who));
-			Ok(())
-		}
-
 		pub fn give_issue_rights(origin, firm: T::AccountId, share_limit: u64) -> Result {
 			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
@@ -55,7 +44,9 @@ decl_module! {
 			ensure!(share_limit > 0, "the value must be greater than 0");
 
 			<IsAllowedIssue<T>>::insert(firm.clone(), true);
-			<MaxShare<T>>::insert(firm, share_limit);
+			<MaxShare<T>>::insert(firm.clone(), share_limit);
+
+			Self::deposit_event(RawEvent::GaveIssueRight(firm, share_limit));
 
 			Ok(())
 		}
@@ -70,6 +61,8 @@ decl_module! {
 
 			<IsAllowedIssue<T>>::insert(firm.clone(), false);
 
+			Self::deposit_event(RawEvent::RevokedIssueRight(firm));
+
 			Ok(())
 		}
 	}
@@ -80,6 +73,8 @@ decl_event!(
 	AccountId = <T as system::Trait>::AccountId {
 
 		SomethingStored(u32, AccountId),
+		GaveIssueRight(AccountId, u64),
+		RevokedIssueRight(AccountId),
 	}
 );
 
