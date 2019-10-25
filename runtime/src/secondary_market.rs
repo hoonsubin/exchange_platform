@@ -9,7 +9,8 @@ pub trait Trait: balances::Trait {
 decl_storage! {
 	trait Store for Module<T: Trait> as TemplateModule {
 
-		/// The array of Accounts that have issued a share. This will only be populated when the Account starts to issue shares
+		/// The array of Accounts that have issued a share.
+		/// This will only be populated when the Account starts to issue shares
 		IssuerArray get(issuer_array): map u64 => T::AccountId;
 
 		/// The number of share that a given Account (company) has issued
@@ -26,6 +27,9 @@ decl_storage! {
 
 		/// The maximum shares the given company can issue
 		MaxShare get(max_share): map T::AccountId => u64;
+
+		/// The market freeze state. Making this true will stop all further exchange
+		MarketFreeze get(market_freeze): bool = false;
 	}
 }
 
@@ -38,11 +42,9 @@ decl_module! {
 			let sender = ensure_signed(origin)?;
 
 			ensure!(sender != firm, "you cannot give rights to yourself");
+			ensure!(Self::is_allowed_issue(&firm) == false, "the firm is already allowed to issue shares");
 
-			let firm_state = Self::is_allowed_issue(firm.clone());
-			ensure!(firm_state == false, "the firm is already allowed to issue shares");
-
-			let current_share_lim = Self::max_share(firm.clone());
+			let current_share_lim = Self::max_share(&firm);
 
 			// only add the given share limit when the current limit is 0
 			if current_share_lim == 0 {
@@ -63,13 +65,50 @@ decl_module! {
 			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
 			ensure!(sender != firm, "you cannot take rights to yourself");
-
-			let firm_state = Self::is_allowed_issue(firm.clone());
-			ensure!(firm_state == true, "the firm is already not allowed to issue shares");
+			ensure!(Self::is_allowed_issue(&firm) == true, "the firm is already not allowed to issue shares");
 
 			<IsAllowedIssue<T>>::insert(firm.clone(), false);
 
 			Self::deposit_event(RawEvent::RevokedIssueRight(firm));
+
+			Ok(())
+		}
+
+		pub fn change_share_limit(origin, firm: T::AccountId, new_limit: u64) -> Result {
+			// todo: make this ensure that origin is root
+			let sender = ensure_signed(origin)?;
+			ensure!(<IsAllowedIssue<T>>::get(&firm), "the firm is not allowed to issue shares");
+			ensure!(sender != firm.clone(), "you cannot change your own issue limit");
+			ensure!(new_limit > Self::total_issued_shares(&firm), "the firm cannot limit shares \
+				less than the already issued amount");
+
+			<MaxShare<T>>::insert(firm.clone(), new_limit);
+
+			Self::deposit_event(RawEvent::ChangedIssueLimit(firm, new_limit));
+
+			Ok(())
+		}
+
+		pub fn freeze_market(origin) -> Result {
+			// todo: make this ensure that origin is root
+			let sender = ensure_signed(origin)?;
+
+			ensure!(!Self::market_freeze(), "the market is already frozen");
+
+			<MarketFreeze<T>>::put(true);
+			Self::deposit_event(RawEvent::MarketFrozen(sender, true));
+
+			Ok(())
+		}
+
+		pub fn unfreeze_market(origin) -> Result {
+			// todo: make this ensure that origin is root
+			let sender = ensure_signed(origin)?;
+
+			ensure!(Self::market_freeze(), "the market is already not frozen");
+
+			<MarketFreeze<T>>::put(false);
+			Self::deposit_event(RawEvent::MarketFrozen(sender, false));
 
 			Ok(())
 		}
@@ -79,68 +118,10 @@ decl_module! {
 decl_event!(
 	pub enum Event<T> where 
 	AccountId = <T as system::Trait>::AccountId {
-
-		SomethingStored(u32, AccountId),
 		GaveIssueRight(AccountId, u64),
 		RevokedIssueRight(AccountId),
+		MarketFrozen(AccountId, bool),
+		ChangedIssueLimit(AccountId, u64),
 	}
 );
 
-/// tests for this module
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	use runtime_io::with_externalities;
-	use primitives::{H256, Blake2Hasher};
-	use support::{impl_outer_origin, assert_ok};
-	use runtime_primitives::{
-		BuildStorage,
-		traits::{BlakeTwo256, IdentityLookup},
-		testing::{Digest, DigestItem, Header}
-	};
-
-	impl_outer_origin! {
-		pub enum Origin for Test {}
-	}
-
-	// For testing the module, we construct most of a mock runtime. This means
-	// first constructing a configuration type (`Test`) which `impl`s each of the
-	// configuration traits of modules we want to use.
-	#[derive(Clone, Eq, PartialEq)]
-	pub struct Test;
-	impl system::Trait for Test {
-		type Origin = Origin;
-		type Index = u64;
-		type BlockNumber = u64;
-		type Hash = H256;
-		type Hashing = BlakeTwo256;
-		type Digest = Digest;
-		type AccountId = u64;
-		type Lookup = IdentityLookup<Self::AccountId>;
-		type Header = Header;
-		type Event = ();
-		type Log = DigestItem;
-	}
-	impl Trait for Test {
-		type Event = ();
-	}
-	type SecondaryMarket = Module<Test>;
-
-	// This function basically just builds a genesis storage key/value store according to
-	// our desired mockup.
-	fn new_test_ext() -> runtime_io::TestExternalities<Blake2Hasher> {
-		system::GenesisConfig::<Test>::default().build_storage().unwrap().0.into()
-	}
-
-	#[test]
-	fn it_works_for_default_value() {
-		with_externalities(&mut new_test_ext(), || {
-			// Just a dummy test for the dummy funtion `do_something`
-			// calling the `do_something` function with a value 42
-			assert_ok!(SecondaryMarket::do_something(Origin::signed(1), 42));
-			// asserting that the stored value is equal to what we stored
-			assert_eq!(SecondaryMarket::something(), Some(42));
-		});
-	}
-}
