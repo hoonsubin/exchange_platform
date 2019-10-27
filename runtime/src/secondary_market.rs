@@ -1,6 +1,31 @@
 use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result,
 	ensure, StorageMap};
 use system::ensure_signed;
+use parity_codec::{Encode, Decode};
+use runtime_primitives::traits::{As, Hash, Zero};
+use rstd::prelude::*;
+
+#[derive(Encode, Decode, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct BuyOrder<AccountId, Balance, Hash>{
+	issuer: AccountId,
+	owner: AccountId,
+	price: Balance,
+	amount: u64,
+	order_id: Hash,
+
+}
+
+#[derive(Encode, Decode, Default, Clone, PartialEq)]
+#[cfg_attr(feature = "std", derive(Debug))]
+pub struct SellOrder<AccountId, Balance, Hash>{
+	issuer: AccountId,
+	owner: AccountId,
+	price: Balance,
+	amount: u64,
+	order_id: Hash,
+
+}
 
 pub trait Trait: balances::Trait {
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
