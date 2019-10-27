@@ -10,10 +10,10 @@ use rstd::prelude::*;
 pub struct BuyOrder<AccountId, Balance, Hash, BlockNumber>{
 	issuer: AccountId,
 	owner: AccountId,
-	price: Balance,
+	max_price: Balance,
 	amount: u64,
 	order_id: Hash,
-	expiration: BlockNumber,
+	expire_block: BlockNumber,
 }
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
@@ -21,10 +21,10 @@ pub struct BuyOrder<AccountId, Balance, Hash, BlockNumber>{
 pub struct SellOrder<AccountId, Balance, Hash, BlockNumber>{
 	issuer: AccountId,
 	owner: AccountId,
-	price: Balance,
+	min_price: Balance,
 	amount: u64,
 	order_id: Hash,
-	expiration: BlockNumber,
+	expire_block: BlockNumber,
 }
 
 pub trait Trait: balances::Trait {
@@ -62,10 +62,17 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
-		pub fn put_sell_order(origin, issuer: T::AccountId, amount: u64, min_price: T::Balance, expiration: T::BlockNumber) -> Result {
+		pub fn put_sell_order(origin, issuer: T::AccountId, amount: u64, min_price: T::Balance, expire_block: T::BlockNumber) -> Result {
 			let sender = ensure_signed(origin)?;
 
 			ensure!(Self::owned_shares((issuer, sender)) >= amount, "you do not own enough shares of this company");
+			ensure!(!Self::market_freeze(), "the market is frozen right now");
+
+			//todo: implement the following logic
+			// get the list of buy orders in the market.
+			// compare the price point and the quantity.
+			// subtract the amount to the buy order's amount and transfer value.
+			// repeat until the amount becomes 0, or no buy orders left in the right price point.
 
 
 			Ok(())
@@ -73,7 +80,7 @@ decl_module! {
 
 		/// Give a given company the right to issue shares with the given authorized shares.
 		/// You can only change the number of authorized shares through the change_authorized_shares function.
-		pub fn give_issue_rights(origin, firm: T::AccountId, share_limit: u64) -> Result {
+		pub fn give_issue_rights(origin, firm: T::AccountId, authorized_shares: u64) -> Result {
 			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
 
@@ -86,15 +93,15 @@ decl_module! {
 			// only add the given share limit when the current limit is 0
 			if current_share_lim == 0 {
 				// make sure the new limit value is more than 0
-				ensure!(share_limit > 0, "the value must be greater than 0");
+				ensure!(authorized_shares > 0, "the value must be greater than 0");
 
-				<AuthorizedShares<T>>::insert(firm.clone(), share_limit);
+				<AuthorizedShares<T>>::insert(firm.clone(), authorized_shares);
 			}
 
 			// update the firm's issue right status to the blockchain
 			<IsAllowedIssue<T>>::insert(firm.clone(), true);
 
-			Self::deposit_event(RawEvent::GaveIssueRight(firm, share_limit));
+			Self::deposit_event(RawEvent::GaveIssueRight(firm, authorized_shares));
 
 			Ok(())
 		}
