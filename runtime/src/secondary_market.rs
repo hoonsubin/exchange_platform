@@ -55,6 +55,12 @@ decl_storage! {
 
 		/// The market freeze state. Making this true will stop all further exchange
 		MarketFreeze get(market_freeze): bool = false;
+
+		/// The list of sell orders for a particular company's account
+		SellOrders get(sell_orders): map T::AccountId => Vec<SellOrder<T::AccountId, T::Balance, T::Hash, T::BlockNumber>>;
+
+		/// The list of buy orders for a particular company's account
+		BuyOrders get(buy_orders): map T::AccountId => Vec<BuyOrder<T::AccountId, T::Balance, T::Hash, T::BlockNumber>>;
 	}
 }
 
@@ -62,6 +68,7 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
+		
 		pub fn put_sell_order(origin, issuer: T::AccountId, amount: u64, min_price: T::Balance, expire_block: T::BlockNumber) -> Result {
 			let sender = ensure_signed(origin)?;
 
@@ -73,7 +80,6 @@ decl_module! {
 			// compare the price point and the quantity.
 			// subtract the amount to the buy order's amount and transfer value.
 			// repeat until the amount becomes 0, or no buy orders left in the right price point.
-
 
 			Ok(())
 		}
@@ -237,6 +243,25 @@ impl <T:Trait> Module<T> {
 		<IssuerList<T>>::get().contains(firm)
 	}
 
+	fn transfer_share(from: T::AccountId, to: T::AccountId, firm: T::AccountId, amount_to_send: u64) -> Result {
+		let shares_before_trans = Self::owned_shares((from.clone(), firm.clone()));
+		ensure!(shares_before_trans >= amount_to_send, "you do not own enough shares so send");
+		ensure!(Self::issuer_list().contains(&firm), "the firm does not exists");
+
+		let shares_subbed = shares_before_trans.checked_sub(amount_to_send).ok_or("underflow while subtracting shares")?;
+
+		let shares_added = Self::owned_shares((to.clone(), firm.clone())).checked_add(amount_to_send).ok_or("overflow while adding shares")?;
+
+		// update the senders share amount
+		<OwnedShares<T>>::insert((from.clone(), firm.clone()), shares_subbed);
+		// update the receiver's amount
+		<OwnedShares<T>>::insert((to.clone(), firm.clone()), shares_added);
+
+		Self::deposit_event(RawEvent::TransferredShares(from, to, firm, amount_to_send));
+
+		Ok(())
+		}
+
 }
 
 decl_event!(
@@ -248,7 +273,8 @@ decl_event!(
 		AdjustedAuthorizedStock(AccountId, u64),
 		IssuedShares(AccountId, u64),
 		RetiredShares(AccountId, u64),
-
+		// parameters are sender, to, firm (issuer), amount
+		TransferredShares(AccountId, AccountId, AccountId, u64),
 
 	}
 );
