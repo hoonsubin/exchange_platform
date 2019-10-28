@@ -1,8 +1,8 @@
 use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result,
-	ensure, StorageMap};
+	ensure, StorageMap, traits::{Currency, ReservableCurrency}};
 use system::ensure_signed;
 use parity_codec::{Encode, Decode};
-use runtime_primitives::traits::{As, Hash, Zero};
+use runtime_primitives::traits::{As, Hash, Zero, CheckedAdd, CheckedMul};
 use rstd::prelude::*;
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
@@ -61,6 +61,8 @@ decl_storage! {
 
 		/// The list of buy orders for a particular company's account
 		BuyOrders get(buy_orders): map T::AccountId => Vec<BuyOrder<T::AccountId, T::Balance, T::Hash, T::BlockNumber>>;
+
+		Nonce get(nonce): u64 = 0;
 	}
 }
 
@@ -68,19 +70,78 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
-		
+		/// Searches the current buy orders and see if there is a price match for the transaction.
+		/// If there are no buy orders, this will create a new sell order which will be checked by the
+		/// put_buy_order function.
 		pub fn put_sell_order(origin, issuer: T::AccountId, amount: u64, min_price: T::Balance, expire_block: T::BlockNumber) -> Result {
 			let sender = ensure_signed(origin)?;
 
-			ensure!(Self::owned_shares((issuer, sender)) >= amount, "you do not own enough shares of this company");
+			ensure!(Self::owned_shares((issuer.clone(), sender.clone())) >= amount, "you do not own enough shares of this company");
 			ensure!(!Self::market_freeze(), "the market is frozen right now");
 
-			//todo: implement the following logic
-			// get the list of buy orders in the market.
-			// compare the price point and the quantity.
-			// subtract the amount to the buy order's amount and transfer value.
-			// repeat until the amount becomes 0, or no buy orders left in the right price point.
+			let mut orders = Self::buy_orders(&issuer);
 
+			// only get the orders where the max price is lower or equal to the min price
+			orders.retain(|x| x.max_price <= min_price);
+
+			// check if the number orders are greater than 0
+			if orders.len() > 0 {
+				let mut remaining_shares = amount;
+
+				// sort the vector from lower max_price to high
+				//todo: requires check if this actually works well
+				orders.sort_by(|a, b| a.max_price.cmp(&b.max_price));
+
+				for order in orders {
+					// check if the order of the share is enough
+					if order.amount >= remaining_shares {
+						// if the buyer's amount is smaller than the seller's
+						// buyer will first send the amount (order.max_price) * (order.amount) to the seller
+						// note that we are selling the shares for the buyer's requested price
+						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("overflow in calculating total price")?;
+
+						// send total price to the owner of the order
+						// note that we are sending the money first to prevent any errors before changing the share value
+						<balances::Module<T> as Currency<_>>::transfer(&sender, &order.owner, total_price)?;
+
+						// then sell all the buyer's requested amount to the buyer
+						Self::transfer_share(sender.clone(), order.owner, issuer.clone(), order.amount)?;
+						// finally change the remaining share value
+						remaining_shares -= order.amount;
+					}
+					else { // if the amount of buy is greater than the amount to sell
+						let shares_selling = order.amount - remaining_shares;
+
+						// if buy quantity > sell quantity, make a new order and replace it with the old one
+						let adjusted_buy_order = BuyOrder {
+							issuer: order.issuer,
+							owner: order.owner,
+							max_price: order.max_price,
+							amount: shares_selling,
+							order_id: Self::generate_hash(sender.clone()),
+							expire_block: order.expire_block,
+
+						};
+						break;
+					}
+					
+				}
+
+			}
+			else {
+				// create a new sell order
+				let new_sell_order = SellOrder {
+					issuer: issuer.clone(),
+					owner: sender.clone(),
+					min_price: min_price,
+					amount: amount,
+					order_id: Self::generate_hash(sender.clone()),
+					expire_block: expire_block,
+
+				};
+
+				// lock the currency to make sure that the seller has cash for the transaction
+			}
 			Ok(())
 		}
 
@@ -239,10 +300,13 @@ decl_module! {
 
 // private functions for the runtime module
 impl <T:Trait> Module<T> {
+
+	/// checks if the given AccountId has share issue rights
 	fn is_issuer(firm: &T::AccountId) -> bool {
 		<IssuerList<T>>::get().contains(firm)
 	}
 
+	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId
 	fn transfer_share(from: T::AccountId, to: T::AccountId, firm: T::AccountId, amount_to_send: u64) -> Result {
 		let shares_before_trans = Self::owned_shares((from.clone(), firm.clone()));
 		ensure!(shares_before_trans >= amount_to_send, "you do not own enough shares so send");
@@ -260,7 +324,20 @@ impl <T:Trait> Module<T> {
 		Self::deposit_event(RawEvent::TransferredShares(from, to, firm, amount_to_send));
 
 		Ok(())
-		}
+	}
+
+	/// Generates and returns a random hash. This will mutate the Nonce storage value
+	fn generate_hash(sender: T::AccountId) -> T::Hash {
+		let nonce = Self::nonce();
+		<Nonce<T>>::put(nonce + 1);
+		(<system::Module<T>>::random_seed(), &sender, nonce).using_encoded(<T as system::Trait>::Hashing::hash)
+	}
+
+	// Being explicit, you can convert a `u64` to a T::Balance
+    // using the `As` trait, with `T: u64`, and then calling `sa`
+    fn u64_to_balance(input: u64) -> T::Balance {
+        <T::Balance as As<u64>>::sa(input)
+    }
 
 }
 
