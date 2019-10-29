@@ -96,10 +96,11 @@ decl_module! {
 			new_order_list.retain(|x| x.max_price > min_price);
 
 			// only get the orders where the max price is lower or equal to the min price, and is not expired
-			temp_buy_orders_list.retain(|x| x.max_price <= min_price);
+			temp_buy_orders_list.retain(|x| x.max_price <= min_price && x.amount > 0);
 
 			// check if the number orders are greater than 0
 			if temp_buy_orders_list.len() > 0 {
+				// used to track how much shares the caller needs to sell
 				let mut remaining_shares = amount;
 
 				// sort the vector from lower max_price to high
@@ -107,10 +108,13 @@ decl_module! {
 				temp_buy_orders_list.sort_by(|a, b| a.max_price.cmp(&b.max_price));
 				
 				runtime_io::print("[Debug]found a good list of buy orders");
+
 				// we are cloning the master list because we will be making changes to it during the loop
 				for order in temp_buy_orders_list.clone() {
+
+					//todo: refactor this block to make it more functional
 					// check if the order of the share is enough
-					if remaining_shares != 0 && order.amount >= remaining_shares {
+					if remaining_shares != 0 && order.amount <= remaining_shares {
 						// if the buyer's amount is smaller than the seller's
 						// buyer will first send the amount (order.max_price) * (order.amount) to the seller
 						// note that we are selling the shares for the buyer's requested price, not the caller's
@@ -135,9 +139,13 @@ decl_module! {
 
 						// remove the current order from the master list once the transaction is done
 						temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
-
 					}
-					else { // if the amount of buy is greater than the amount to sell
+
+					// break the loop if the caller sold all the shares
+					if remaining_shares == 0 { break; }
+
+					// if the amount of buy is greater than the amount to sell
+					if order.amount > remaining_shares { 
 						let shares_selling = order.amount.checked_sub(remaining_shares)
 							.ok_or("[Error]underflow during calculation of total shares")?;
 
@@ -158,11 +166,9 @@ decl_module! {
 								order_id: Self::generate_hash(sender.clone())
 
 							};
-
 							// push (add to the last index) the newly adjusted buy order to the master list
 							temp_buy_orders_list.push(adjusted_buy_order);
 						}
-						
 						// break out of the for loop once the caller sold all the shares
 						break;
 					}
@@ -179,14 +185,22 @@ decl_module! {
 
 				// if the caller could not sell all the shares
 				if remaining_shares > 0 {
-					Self::add_sell_order_to_blockchain(sender.clone(), firm.clone(), sender.clone(), min_price, remaining_shares);
+					Self::add_sell_order_to_blockchain(sender.clone(), 
+					firm.clone(), 
+					sender.clone(), 
+					min_price, 
+					remaining_shares);
 				}
 			}
 			else { // if there are no existing buy orders with the right price in the market
 
 				runtime_io::print("[Debug]no buy orders in given price point, will make a new sell order");
 				// create a new sell order so later buyers can check it
-				Self::add_sell_order_to_blockchain(sender.clone(), firm.clone(), sender.clone(), min_price, amount);
+				Self::add_sell_order_to_blockchain(sender.clone(), 
+				firm.clone(), 
+				sender.clone(), 
+				min_price, 
+				amount);
 			}
 			Ok(())
 		}
@@ -201,8 +215,8 @@ decl_module! {
 				.ok_or("[Error]overflow in calculating total price")?;
 
 			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
-			ensure!(<balances::Module<T>>::free_balance(sender.clone()) >= total_price
-			, "[Error]you don't have enough free balance for this trade");
+			ensure!(<balances::Module<T>>::free_balance(sender.clone()) >= total_price,
+			 "[Error]you don't have enough free balance for this trade");
 
 			let sell_order_list = Self::sell_order_list(&firm);
 
@@ -214,7 +228,7 @@ decl_module! {
 
 			// only get the orders where the min price is lower or equal to the max price
 			// we will be making adjustments to this list to update the global list
-			temp_sell_list.retain(|x| x.min_price <= max_price);
+			temp_sell_list.retain(|x| x.min_price <= max_price && x.amount > 0);
 
 			// check if the number of valid orders are greater than 0
 			if temp_sell_list.len() > 0 {
@@ -226,7 +240,7 @@ decl_module! {
 
 				for order in temp_sell_list.clone(){
 
-					if remaining_shares_to_buy != 0 && order.amount >= remaining_shares_to_buy {
+					if remaining_shares_to_buy != 0 && order.amount <= remaining_shares_to_buy {
 						// get the total price the buyer will have to pay for the current order
 						let total_price = order.min_price.checked_mul(&Self::u64_to_balance(order.amount))
 						.ok_or("[Error]overflow in calculating total price")?;
@@ -253,7 +267,12 @@ decl_module! {
 						// remove the current order from the master list once the transaction is done
 						temp_sell_list.retain(|x| x.order_id != order.order_id);
 					}
-					else { // if the amount of buy is greater than the amount to sell
+
+					// break the loop if the caller bought all the shares
+					if remaining_shares_to_buy == 0 { break; }
+
+					// if the amount of buy is greater than the amount to sell
+					if order.amount > remaining_shares_to_buy { 
 						let shares_buying = order.amount.checked_sub(remaining_shares_to_buy)
 							.ok_or("[Error]underflow during calculation of total shares")?;
 
@@ -294,16 +313,23 @@ decl_module! {
 
 				// if the caller could not sell all the shares
 				if remaining_shares_to_buy > 0 {
-					Self::add_sell_order_to_blockchain(sender.clone(), firm.clone(), sender.clone(), max_price, remaining_shares_to_buy);
+					Self::add_sell_order_to_blockchain(sender.clone(), 
+					firm.clone(), 
+					sender.clone(), 
+					max_price, 
+					remaining_shares_to_buy);
 				}
 
 			}
 			else { // if there are no good orders in the market
 				runtime_io::print("[Debug]no sell orders in given price point, will make a new buy order");
 				// create a new sell order so later buyers can check it
-				Self::add_buy_order_to_blockchain(sender.clone(), firm.clone(), sender.clone(), max_price, amount);
+				Self::add_buy_order_to_blockchain(sender.clone(), 
+				firm.clone(), 
+				sender.clone(), 
+				max_price, 
+				amount);
 			}
-
 			
 			Ok(())
 		}
