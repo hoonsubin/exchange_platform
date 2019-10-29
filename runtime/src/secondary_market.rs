@@ -61,8 +61,6 @@ decl_storage! {
 		/// The list of buy orders for a particular company's account
 		BuyOrdersList get(buy_orders_list): map T::AccountId => Vec<BuyOrder<T::AccountId, T::Balance, T::Hash>>;
 
-		//BuyOrder get(buy_order): map T::Hash => Option<BuyOrder<T::AccountId, T::Balance, T::Hash>>;
-
 		/// A nonce value used for generating random values
 		Nonce get(nonce): u64 = 0;
 	}
@@ -79,23 +77,26 @@ decl_module! {
 			//todo: the current implementation of this code is very inefficient, please refactor later
 			let sender = ensure_signed(origin)?;
 
-			ensure!(!Self::market_freeze(), "the market is frozen right now");
-			ensure!(Self::balance_to_u64(min_price.clone()) > 0, "you cannot sell for 0");
-			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount, "you do not own enough shares of this company");
+			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
+			ensure!(Self::balance_to_u64(min_price.clone()) > 0, "[Error]you cannot sell for 0");
+			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount
+			, "[Error]you do not own enough shares of this company");
 			
 			// get the entire buy orders from the blockchain
+			// we only call this once to save memory
 			let buy_orders_list = Self::buy_orders_list(&firm);
 
-			// make a mutable copy of the list since we will be making changes to it
+			// a mutable copy of the list that we will be making changes to
 			let mut temp_buy_orders_list = buy_orders_list.clone();
 
+			// this is also a clone of the master list, but we will not make changes to this one
 			let mut new_order_list = buy_orders_list.clone();
 
 			// make a new list of all the orders that are not going to be mutated
 			new_order_list.retain(|x| x.max_price > min_price);
 
 			// only get the orders where the max price is lower or equal to the min price, and is not expired
-			temp_buy_orders_list.retain(|x| x.max_price <= min_price && x.amount > 0);
+			temp_buy_orders_list.retain(|x| x.max_price <= min_price);
 
 			// check if the number orders are greater than 0
 			if temp_buy_orders_list.len() > 0 {
@@ -109,11 +110,12 @@ decl_module! {
 				// we are cloning the master list because we will be making changes to it during the loop
 				for order in temp_buy_orders_list.clone() {
 					// check if the order of the share is enough
-					if order.amount >= remaining_shares {
+					if remaining_shares != 0 && order.amount >= remaining_shares {
 						// if the buyer's amount is smaller than the seller's
 						// buyer will first send the amount (order.max_price) * (order.amount) to the seller
 						// note that we are selling the shares for the buyer's requested price, not the caller's
-						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("overflow in calculating total price")?;
+						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(order.amount))
+							.ok_or("[Error]overflow in calculating total price")?;
 
 						// transfer the total price from the owner of the order, to the caller
 						// note that we are sending the money first to prevent any errors before changing the share value
@@ -124,35 +126,43 @@ decl_module! {
 
 						// update the last bid price for this share
 						<LastBidPrice<T>>::insert(firm.clone(), order.max_price);
+						
+						// match the reaming shares, and return 0 when overflow
+						remaining_shares = match remaining_shares.checked_sub(order.amount){
+							Some(v) => v,
+							None => 0,
+						};
 
-						// finally change the remaining share value
-						remaining_shares -= order.amount;
 						// remove the current order from the master list once the transaction is done
 						temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
 
 					}
 					else { // if the amount of buy is greater than the amount to sell
-						let shares_selling = order.amount.checked_sub(remaining_shares).ok_or("underflow during calculation of total shares")?;
+						let shares_selling = order.amount.checked_sub(remaining_shares)
+							.ok_or("[Error]underflow during calculation of total shares")?;
 
 						// calculate the total price the owner of the order will have to send
-						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(shares_selling)).ok_or("overflow in calculating total price")?;
+						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(shares_selling))
+							.ok_or("[Error]overflow in calculating total price")?;
 						
 						<balances::Module<T> as Currency<_>>::transfer(&order.owner, &sender, total_price)?;
 
-						// if buy quantity > sell quantity, make a new order with adjusted amount
-						// and replace it with the old one. This will also give a new Hash (order_id)
-						let adjusted_buy_order = BuyOrder {
-							firm: order.firm,
-							owner: order.owner,
-							max_price: order.max_price,
-							amount: shares_selling,
-							order_id: Self::generate_hash(sender.clone())
+						if shares_selling > 0 {
+							// if buy quantity > sell quantity, make a new order with adjusted amount
+							// and replace it with the old one. This will also give a new Hash (order_id)
+							let adjusted_buy_order = BuyOrder {
+								firm: order.firm,
+								owner: order.owner,
+								max_price: order.max_price,
+								amount: shares_selling,
+								order_id: Self::generate_hash(sender.clone())
 
-						};
+							};
 
-						// push (add to the last index) the newly adjusted buy order to the master list
-						temp_buy_orders_list.push(adjusted_buy_order);
-
+							// push (add to the last index) the newly adjusted buy order to the master list
+							temp_buy_orders_list.push(adjusted_buy_order);
+						}
+						
 						// break out of the for loop once the caller sold all the shares
 						break;
 					}
@@ -160,6 +170,9 @@ decl_module! {
 				}
 				// combine the order list that wasn't touched, and the adjusted ones
 				new_order_list.append(&mut temp_buy_orders_list);
+
+				// as a final check, only retain the items where the quantity is over 0
+				new_order_list.retain(|x| x.amount > 0);
 
 				// replace the entire list with the new one
 				<BuyOrdersList<T>>::insert(&firm, new_order_list);
@@ -169,7 +182,7 @@ decl_module! {
 					Self::add_sell_order_to_blockchain(sender.clone(), firm.clone(), sender.clone(), min_price, remaining_shares);
 				}
 			}
-			else { // if there are no existing buy orders in the market
+			else { // if there are no existing buy orders with the right price in the market
 
 				runtime_io::print("[Debug]no buy orders in given price point, will make a new sell order");
 				// create a new sell order so later buyers can check it
@@ -184,10 +197,12 @@ decl_module! {
 		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: T::Balance) -> Result {
 			//todo: the current implementation of this code is very inefficient, please refactor later
 			let sender = ensure_signed(origin)?;
-			let total_price = max_price.checked_mul(&Self::u64_to_balance(amount.clone())).ok_or("overflow in calculating total price")?;
+			let total_price = max_price.checked_mul(&Self::u64_to_balance(amount.clone()))
+				.ok_or("[Error]overflow in calculating total price")?;
 
-			ensure!(!Self::market_freeze(), "the market is frozen right now");
-			ensure!(<balances::Module<T>>::free_balance(sender.clone()) >= total_price, "you don't have enough free balance for this trade");
+			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
+			ensure!(<balances::Module<T>>::free_balance(sender.clone()) >= total_price
+			, "[Error]you don't have enough free balance for this trade");
 
 			let sell_order_list = Self::sell_order_list(&firm);
 
@@ -199,7 +214,7 @@ decl_module! {
 
 			// only get the orders where the min price is lower or equal to the max price
 			// we will be making adjustments to this list to update the global list
-			temp_sell_list.retain(|x| x.min_price <= max_price && x.amount > 0);
+			temp_sell_list.retain(|x| x.min_price <= max_price);
 
 			// check if the number of valid orders are greater than 0
 			if temp_sell_list.len() > 0 {
@@ -211,9 +226,13 @@ decl_module! {
 
 				for order in temp_sell_list.clone(){
 
-					if order.amount >= remaining_shares_to_buy {
+					if remaining_shares_to_buy != 0 && order.amount >= remaining_shares_to_buy {
 						// get the total price the buyer will have to pay for the current order
-						let total_price = order.min_price.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("overflow in calculating total price")?;
+						let total_price = order.min_price.checked_mul(&Self::u64_to_balance(order.amount))
+						.ok_or("[Error]overflow in calculating total price")?;
+						
+						ensure!(Self::owned_shares((order.owner.clone(), order.firm.clone())) >= order.amount
+						, "[Error]the seller does not have enough shares");
 
 						// transfer the total price from the owner of the order, to the caller
 						// note that we are sending the money first to prevent any errors before changing the share value
@@ -226,36 +245,49 @@ decl_module! {
 						<LastBidPrice<T>>::insert(firm.clone(), order.min_price);
 
 						// finally change the remaining share value
-						remaining_shares_to_buy -= order.amount;
+						// match the reaming shares, and return 0 when overflow
+						remaining_shares_to_buy = match remaining_shares_to_buy.checked_sub(order.amount){
+							Some(v) => v,
+							None => 0,
+						};
 						// remove the current order from the master list once the transaction is done
 						temp_sell_list.retain(|x| x.order_id != order.order_id);
 					}
 					else { // if the amount of buy is greater than the amount to sell
-						let shares_buying = order.amount.checked_sub(remaining_shares_to_buy).ok_or("underflow during calculation of total shares")?;
+						let shares_buying = order.amount.checked_sub(remaining_shares_to_buy)
+							.ok_or("[Error]underflow during calculation of total shares")?;
 
 						// calculate the total price the caller will have to send
-						let total_price = order.min_price.checked_mul(&Self::u64_to_balance(shares_buying)).ok_or("overflow in calculating total price")?;
+						let total_price = order.min_price.checked_mul(&Self::u64_to_balance(shares_buying))
+							.ok_or("[Error]overflow in calculating total price")?;
 						
 						<balances::Module<T> as Currency<_>>::transfer(&sender, &order.owner, total_price)?;
 
-						// if sell quantity > your buy quantity, make a new order with adjusted amount
-						// and replace it with the old one. This will also give a new Hash (order_id)
-						let adjusted_sell_order = SellOrder {
-							firm: order.firm,
-							owner: order.owner,
-							min_price: order.min_price,
-							amount: shares_buying,
-							order_id: Self::generate_hash(sender.clone())
+						if shares_buying > 0 {
+							// if sell quantity > your buy quantity, make a new order with adjusted amount
+							// and replace it with the old one. This will also give a new Hash (order_id)
+							let adjusted_sell_order = SellOrder {
+								firm: order.firm,
+								owner: order.owner,
+								min_price: order.min_price,
+								amount: shares_buying,
+								order_id: Self::generate_hash(sender.clone())
 
-						};
+							};
 
-						// push (add to the last index) the newly adjusted sell order to the master list
-						temp_sell_list.push(adjusted_sell_order);
+							// push (add to the last index) the newly adjusted sell order to the master list
+							temp_sell_list.push(adjusted_sell_order);
+						}
+						
+						// break out of the for loop to combine the adjusted list
 						break;
 					}
 				}
 				// combine the order list that wasn't touched, and the adjusted ones
 				new_sell_list.append(&mut temp_sell_list);
+
+				// as a final check, only retain the items where the quantity is over 0
+				new_sell_list.retain(|x| x.amount > 0);
 
 				// replace the entire list with the new one
 				<SellOrdersList<T>>::insert(&firm, new_sell_list);
@@ -283,15 +315,15 @@ decl_module! {
 			let sender = ensure_signed(origin)?;
 
 			// ensure that the firm is not giving themselves issue rights
-			ensure!(sender != firm, "you cannot give rights to yourself");
-			ensure!(Self::is_allowed_issue(&firm) == false, "the firm is already allowed to issue shares");
+			ensure!(sender != firm, "[Error]you cannot give rights to yourself");
+			ensure!(Self::is_allowed_issue(&firm) == false, "[Error]the firm is already allowed to issue shares");
 
 			let current_share_lim = Self::authorized_shares(&firm);
 
 			// only add the given share limit when the current limit is 0
 			if current_share_lim == 0 {
 				// make sure the new limit value is more than 0
-				ensure!(authorized_shares > 0, "the value must be greater than 0");
+				ensure!(authorized_shares > 0, "[Error]the value must be greater than 0");
 
 				<AuthorizedShares<T>>::insert(firm.clone(), authorized_shares);
 			}
@@ -309,8 +341,8 @@ decl_module! {
 		pub fn revoke_issue_rights(origin, firm: T::AccountId) -> Result {
 			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
-			ensure!(sender != firm, "you cannot take rights to yourself");
-			ensure!(Self::is_allowed_issue(&firm) == true, "the firm is already not allowed to issue shares");
+			ensure!(sender != firm, "[Error]you cannot take rights to yourself");
+			ensure!(Self::is_allowed_issue(&firm) == true, "[Error]the firm is already not allowed to issue shares");
 
 			// update the firm's share issue right state
 			<IsAllowedIssue<T>>::insert(firm.clone(), false);
@@ -326,9 +358,9 @@ decl_module! {
 		pub fn change_authorized_shares(origin, firm: T::AccountId, new_limit: u64) -> Result {
 			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
-			ensure!(<IsAllowedIssue<T>>::get(&firm), "the firm is not allowed to issue shares");
-			ensure!(sender != firm.clone(), "you cannot change your own issue limit");
-			ensure!(new_limit > Self::floating_shares(&firm), "the firm cannot limit shares \
+			ensure!(<IsAllowedIssue<T>>::get(&firm), "[Error]the firm is not allowed to issue shares");
+			ensure!(sender != firm.clone(), "[Error]you cannot change your own issue limit");
+			ensure!(new_limit > Self::floating_shares(&firm), "[Error]the firm cannot limit shares \
 				less than the already issued amount");
 
 			<AuthorizedShares<T>>::insert(firm.clone(), new_limit);
@@ -344,15 +376,16 @@ decl_module! {
 		pub fn issue_shares(origin, amount: u64) -> Result {
 			let sender = ensure_signed(origin)?;
 
-			ensure!(Self::is_allowed_issue(&sender), "this firm is not allowed to issue additional shares");
+			ensure!(Self::is_allowed_issue(&sender), "[Error]this firm is not allowed to issue additional shares");
 
 			let old_shares_outstanding = Self::floating_shares(&sender);
 
 			//let new_shares_outstanding = Self::floating_shares(&sender) + amount.clone();
 			let new_shares_outstanding = old_shares_outstanding.checked_add(amount.clone())
-				.ok_or("overflowing when issuing new shares")?;
+				.ok_or("[Error]overflowing when issuing new shares")?;
 
-			ensure!(new_shares_outstanding < Self::authorized_shares(&sender), "already issued the maximum amount of shares");
+			ensure!(new_shares_outstanding < Self::authorized_shares(&sender)
+			, "[Error]already issued the maximum amount of shares");
 
 			// add the firm to the list if it is not in there
 			if !Self::is_firm(&sender) {
@@ -376,15 +409,16 @@ decl_module! {
 			let held_shares = Self::owned_shares((sender.clone(), sender.clone()));
 
 			// prevent underflow by making sure that the account has more shares than the amount to decrease
-			ensure!(held_shares >= amount, "you do not have enough shares to retire");
+			ensure!(held_shares >= amount, "[Error]you do not have enough shares to retire");
 
 			// the new number of shares the caller will have
 			//let new_amount = held_shares - amount;
-			let new_amount = held_shares.checked_sub(amount).ok_or("underflow while subtracting held shares")?;
+			let new_amount = held_shares.checked_sub(amount).ok_or("[Error]underflow while subtracting held shares")?;
 
 			// the new number of floating shares that is issued by the caller
 			//let new_float = Self::floating_shares(&sender) - amount;
-			let new_float = Self::floating_shares(&sender).checked_sub(amount).ok_or("underflow while subtracting floating shares")?;
+			let new_float = Self::floating_shares(&sender).checked_sub(amount)
+				.ok_or("[Error]underflow while subtracting floating shares")?;
 
 			//todo: check and remove the firm's name from the IssuerList if the total floating share becomes 0
 			if Self::is_firm(&sender) && new_float == 0{
@@ -407,7 +441,7 @@ decl_module! {
 			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
 
-			ensure!(!Self::market_freeze(), "the market is already frozen");
+			ensure!(!Self::market_freeze(), "[Error]the market is already frozen");
 
 			<MarketFreeze<T>>::put(true);
 			Self::deposit_event(RawEvent::MarketFrozen(sender, true));
@@ -419,7 +453,7 @@ decl_module! {
 			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
 
-			ensure!(Self::market_freeze(), "the market is already not frozen");
+			ensure!(Self::market_freeze(), "[Error]the market is already not frozen");
 
 			<MarketFreeze<T>>::put(false);
 			Self::deposit_event(RawEvent::MarketFrozen(sender, false));
@@ -440,12 +474,14 @@ impl <T:Trait> Module<T> {
 	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId
 	fn transfer_share(from: T::AccountId, to: T::AccountId, firm: T::AccountId, amount_to_send: u64) -> Result {
 		let shares_before_trans = Self::owned_shares((from.clone(), firm.clone()));
-		ensure!(shares_before_trans >= amount_to_send, "you do not own enough shares so send");
-		ensure!(Self::issuer_list().contains(&firm), "the firm does not exists");
+		ensure!(shares_before_trans >= amount_to_send, "[Error]you do not own enough shares so send");
+		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
 
-		let shares_subbed = shares_before_trans.checked_sub(amount_to_send).ok_or("underflow while subtracting shares")?;
+		let shares_subbed = shares_before_trans.checked_sub(amount_to_send)
+			.ok_or("[Error]underflow while subtracting shares")?;
 
-		let shares_added = Self::owned_shares((to.clone(), firm.clone())).checked_add(amount_to_send).ok_or("overflow while adding shares")?;
+		let shares_added = Self::owned_shares((to.clone(), firm.clone())).checked_add(amount_to_send)
+			.ok_or("[Error]overflow while adding shares")?;
 
 		// update the senders share amount
 		<OwnedShares<T>>::insert((from.clone(), firm.clone()), shares_subbed);
