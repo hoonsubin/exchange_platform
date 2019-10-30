@@ -1,14 +1,19 @@
-use support::{decl_module, decl_storage, decl_event, StorageValue, dispatch::Result,
-	ensure, StorageMap, traits::{Currency, ReservableCurrency}};
-use system::ensure_signed;
-use parity_codec::{Encode, Decode};
-use runtime_primitives::traits::{As, Hash, CheckedMul};
+use parity_codec::{Decode, Encode};
 use rstd::prelude::*;
 use runtime_io::{self};
+use runtime_primitives::traits::{As, CheckedMul, Hash};
+use support::{
+	decl_event, decl_module, decl_storage,
+	dispatch::Result,
+	ensure,
+	traits::{Currency, ReservableCurrency},
+	StorageMap, StorageValue,
+};
+use system::ensure_signed;
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "std", derive(Debug))]
-pub struct BuyOrder<AccountId, Balance, Hash>{
+pub struct BuyOrder<AccountId, Balance, Hash> {
 	firm: AccountId,
 	owner: AccountId,
 	max_price: Balance,
@@ -18,7 +23,7 @@ pub struct BuyOrder<AccountId, Balance, Hash>{
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "std", derive(Debug))]
-pub struct SellOrder<AccountId, Balance, Hash>{
+pub struct SellOrder<AccountId, Balance, Hash> {
 	firm: AccountId,
 	owner: AccountId,
 	min_price: Balance,
@@ -79,9 +84,8 @@ decl_module! {
 
 			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
 			ensure!(Self::balance_to_u64(min_price.clone()) > 0, "[Error]you cannot sell for 0");
-			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount
-			, "[Error]you do not own enough shares of this company");
-			
+			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount,
+				"[Error]you do not own enough shares of this company");
 			// get the entire buy orders from the blockchain
 			// we only call this once to save memory
 			let buy_orders_list = Self::buy_orders_list(&firm);
@@ -93,10 +97,10 @@ decl_module! {
 			let mut new_order_list = buy_orders_list.clone();
 
 			// make a new list of all the orders that are not going to be mutated
-			new_order_list.retain(|x| x.max_price > min_price);
+			new_order_list.retain(|x| x.max_price < min_price);
 
 			// only get the orders where the max price is lower or equal to the min price, and is not expired
-			temp_buy_orders_list.retain(|x| x.max_price <= min_price && x.amount > 0);
+			temp_buy_orders_list.retain(|x| x.max_price >= min_price && x.amount > 0);
 
 			// check if the number orders are greater than 0
 			if temp_buy_orders_list.len() > 0 {
@@ -106,73 +110,51 @@ decl_module! {
 				// sort the vector from lower max_price to high
 				//todo: requires check if this actually works well
 				temp_buy_orders_list.sort_by(|a, b| a.max_price.cmp(&b.max_price));
-				
 				runtime_io::print("[Debug]found a good list of buy orders");
 
 				// we are cloning the master list because we will be making changes to it during the loop
 				for order in temp_buy_orders_list.clone() {
 
-					//todo: refactor this block to make it more functional
+					if remaining_shares == 0 { // break the loop if the caller sold all the shares
+						runtime_io::print("[Debug]remaining_shares == 0");
+						break;
+					}
 					// check if the order of the share is enough
-					if remaining_shares != 0 && order.amount <= remaining_shares {
-						// if the buyer's amount is smaller than the seller's
-						// buyer will first send the amount (order.max_price) * (order.amount) to the seller
-						// note that we are selling the shares for the buyer's requested price, not the caller's
-						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(order.amount))
-							.ok_or("[Error]overflow in calculating total price")?;
-
-						// transfer the total price from the owner of the order, to the caller
-						// note that we are sending the money first to prevent any errors before changing the share value
-						<balances::Module<T> as Currency<_>>::transfer(&order.owner, &sender, total_price)?;
+					else if order.amount <= remaining_shares {
+						runtime_io::print("[Debug]order.amount <= remaining_shares");
 
 						// then send all the buyer's requested amount to the buyer
-						Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), order.amount)?;
+						Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price)?;
 
-						// update the last bid price for this share
-						<LastBidPrice<T>>::insert(firm.clone(), order.max_price);
-						
-						// match the reaming shares, and return 0 when overflow
-						remaining_shares = match remaining_shares.checked_sub(order.amount){
-							Some(v) => v,
-							None => 0,
-						};
+						remaining_shares = remaining_shares.checked_sub(order.amount).ok_or("[Error]underflow while subtracting new shares")?;
 
 						// remove the current order from the master list once the transaction is done
 						temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
 					}
-
-					// break the loop if the caller sold all the shares
-					if remaining_shares == 0 { break; }
-
 					// if the amount of buy is greater than the amount to sell
-					if order.amount > remaining_shares { 
+					else if order.amount > remaining_shares {
+
+						runtime_io::print("[Debug]order.amount > remaining_shares");
+
 						let shares_selling = order.amount.checked_sub(remaining_shares)
-							.ok_or("[Error]underflow during calculation of total shares")?;
+							.ok_or("[Error]underflow while calculating left shares")?;
+						Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price)?;
+						// remove the current order from the master list once the transaction is done
+						temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
 
-						// calculate the total price the owner of the order will have to send
-						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(shares_selling))
-							.ok_or("[Error]overflow in calculating total price")?;
-						
-						<balances::Module<T> as Currency<_>>::transfer(&order.owner, &sender, total_price)?;
+						let new_buy_order = BuyOrder{
+							firm: order.firm,
+							owner: order.owner,
+							max_price: order.max_price,
+							amount: shares_selling,
+							order_id: Self::generate_hash(sender.clone()),
+						};
 
-						if shares_selling > 0 {
-							// if buy quantity > sell quantity, make a new order with adjusted amount
-							// and replace it with the old one. This will also give a new Hash (order_id)
-							let adjusted_buy_order = BuyOrder {
-								firm: order.firm,
-								owner: order.owner,
-								max_price: order.max_price,
-								amount: shares_selling,
-								order_id: Self::generate_hash(sender.clone())
-
-							};
-							// push (add to the last index) the newly adjusted buy order to the master list
-							temp_buy_orders_list.push(adjusted_buy_order);
-						}
+						// add the adjusted order to the list
+						temp_buy_orders_list.push(new_buy_order);
 						// break out of the for loop once the caller sold all the shares
 						break;
 					}
-					
 				}
 				// combine the order list that wasn't touched, and the adjusted ones
 				new_order_list.append(&mut temp_buy_orders_list);
@@ -185,10 +167,10 @@ decl_module! {
 
 				// if the caller could not sell all the shares
 				if remaining_shares > 0 {
-					Self::add_sell_order_to_blockchain(sender.clone(), 
-					firm.clone(), 
-					sender.clone(), 
-					min_price, 
+					Self::add_sell_order_to_blockchain(sender.clone(),
+					firm.clone(),
+					sender.clone(),
+					min_price,
 					remaining_shares);
 				}
 			}
@@ -196,10 +178,10 @@ decl_module! {
 
 				runtime_io::print("[Debug]no buy orders in given price point, will make a new sell order");
 				// create a new sell order so later buyers can check it
-				Self::add_sell_order_to_blockchain(sender.clone(), 
-				firm.clone(), 
-				sender.clone(), 
-				min_price, 
+				Self::add_sell_order_to_blockchain(sender.clone(),
+				firm.clone(),
+				sender.clone(),
+				min_price,
 				amount);
 			}
 			Ok(())
@@ -211,15 +193,10 @@ decl_module! {
 		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: T::Balance) -> Result {
 			//todo: the current implementation of this code is very inefficient, please refactor later
 			let sender = ensure_signed(origin)?;
-			let total_price = max_price.checked_mul(&Self::u64_to_balance(amount.clone()))
-				.ok_or("[Error]overflow in calculating total price")?;
-
 			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
-			ensure!(<balances::Module<T>>::free_balance(sender.clone()) >= total_price,
-			 "[Error]you don't have enough free balance for this trade");
 
 			let sell_order_list = Self::sell_order_list(&firm);
-
+			// create two copies of the master list.
 			let mut temp_sell_list = sell_order_list.clone();
 			let mut new_sell_list = sell_order_list.clone();
 
@@ -239,65 +216,44 @@ decl_module! {
 				temp_sell_list.sort_by(|a, b| b.min_price.cmp(&a.min_price));
 
 				for order in temp_sell_list.clone(){
+					// break the loop if the caller bought all the shares
+					if remaining_shares_to_buy == 0 {
+						runtime_io::print("[Debug]remaining_shares_to_buy == 0");
+						break;
+					}
+					else if order.amount <= remaining_shares_to_buy {
+						runtime_io::print("[Debug]order.amount <= remaining_shares_to_buy");
 
-					if remaining_shares_to_buy != 0 && order.amount <= remaining_shares_to_buy {
-						// get the total price the buyer will have to pay for the current order
-						let total_price = order.min_price.checked_mul(&Self::u64_to_balance(order.amount))
-						.ok_or("[Error]overflow in calculating total price")?;
-						
-						ensure!(Self::owned_shares((order.owner.clone(), order.firm.clone())) >= order.amount
-						, "[Error]the seller does not have enough shares");
+						Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price)?;
 
-						// transfer the total price from the owner of the order, to the caller
-						// note that we are sending the money first to prevent any errors before changing the share value
-						<balances::Module<T> as Currency<_>>::transfer(&sender, &order.owner, total_price)?;
+						remaining_shares_to_buy = remaining_shares_to_buy.checked_sub(order.amount)
+							.ok_or("[Error]underflow while subtracting new shares")?;
 
-						// then send all the buyer's requested amount to the buyer
-						Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount)?;
-
-						// update the last bid price for this share
-						<LastBidPrice<T>>::insert(firm.clone(), order.min_price);
-
-						// finally change the remaining share value
-						// match the reaming shares, and return 0 when overflow
-						remaining_shares_to_buy = match remaining_shares_to_buy.checked_sub(order.amount){
-							Some(v) => v,
-							None => 0,
-						};
 						// remove the current order from the master list once the transaction is done
 						temp_sell_list.retain(|x| x.order_id != order.order_id);
 					}
-
-					// break the loop if the caller bought all the shares
-					if remaining_shares_to_buy == 0 { break; }
-
 					// if the amount of buy is greater than the amount to sell
-					if order.amount > remaining_shares_to_buy { 
-						let shares_buying = order.amount.checked_sub(remaining_shares_to_buy)
+					else if order.amount > remaining_shares_to_buy {
+
+						runtime_io::print("[Debug]remaining_shares_to_buy > 0");
+
+						let share_left = order.amount.checked_sub(remaining_shares_to_buy)
 							.ok_or("[Error]underflow during calculation of total shares")?;
 
-						// calculate the total price the caller will have to send
-						let total_price = order.min_price.checked_mul(&Self::u64_to_balance(shares_buying))
-							.ok_or("[Error]overflow in calculating total price")?;
-						
-						<balances::Module<T> as Currency<_>>::transfer(&sender, &order.owner, total_price)?;
+						Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price)?;
 
-						if shares_buying > 0 {
-							// if sell quantity > your buy quantity, make a new order with adjusted amount
-							// and replace it with the old one. This will also give a new Hash (order_id)
-							let adjusted_sell_order = SellOrder {
+						let adjusted_sell_order = SellOrder {
 								firm: order.firm,
 								owner: order.owner,
 								min_price: order.min_price,
-								amount: shares_buying,
+								amount: share_left,
 								order_id: Self::generate_hash(sender.clone())
 
 							};
 
-							// push (add to the last index) the newly adjusted sell order to the master list
-							temp_sell_list.push(adjusted_sell_order);
-						}
-						
+						// push (add to the last index) the newly adjusted sell order to the master list
+						temp_sell_list.push(adjusted_sell_order);
+
 						// break out of the for loop to combine the adjusted list
 						break;
 					}
@@ -313,10 +269,10 @@ decl_module! {
 
 				// if the caller could not sell all the shares
 				if remaining_shares_to_buy > 0 {
-					Self::add_sell_order_to_blockchain(sender.clone(), 
-					firm.clone(), 
-					sender.clone(), 
-					max_price, 
+					Self::add_sell_order_to_blockchain(sender.clone(),
+					firm.clone(),
+					sender.clone(),
+					max_price,
 					remaining_shares_to_buy);
 				}
 
@@ -324,13 +280,12 @@ decl_module! {
 			else { // if there are no good orders in the market
 				runtime_io::print("[Debug]no sell orders in given price point, will make a new buy order");
 				// create a new sell order so later buyers can check it
-				Self::add_buy_order_to_blockchain(sender.clone(), 
-				firm.clone(), 
-				sender.clone(), 
-				max_price, 
+				Self::add_buy_order_to_blockchain(sender.clone(),
+				firm.clone(),
+				sender.clone(),
+				max_price,
 				amount);
 			}
-			
 			Ok(())
 		}
 
@@ -490,29 +445,57 @@ decl_module! {
 }
 
 // private functions for the runtime module
-impl <T:Trait> Module<T> {
-
+impl<T: Trait> Module<T> {
 	/// checks if the given AccountId has share issue rights
 	fn is_firm(firm: &T::AccountId) -> bool {
 		<IssuerList<T>>::get().contains(firm)
 	}
 
-	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId
-	fn transfer_share(from: T::AccountId, to: T::AccountId, firm: T::AccountId, amount_to_send: u64) -> Result {
+	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId.
+	/// And the `to` account will send the `price_per_share` to the `from` account.
+	/// This function handles safe maths, transfer of shares, transfer of coins, and updates last bid price storage
+	fn transfer_share(
+		from: T::AccountId,
+		to: T::AccountId,
+		firm: T::AccountId,
+		amount_to_send: u64,
+		price_per_share: T::Balance,
+	) -> Result {
+		// the owned shares for the sender
 		let shares_before_trans = Self::owned_shares((from.clone(), firm.clone()));
-		ensure!(shares_before_trans >= amount_to_send, "[Error]you do not own enough shares so send");
-		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
+		// calculate the total price for this transfer
+		let total_price = price_per_share
+			.checked_mul(&Self::u64_to_balance(amount_to_send.clone()))
+			.ok_or("[Error]overflow in calculating total price")?;
+		ensure!(
+			shares_before_trans >= amount_to_send,
+			"[Error]you do not own enough shares so send"
+		);
+		ensure!(
+			Self::issuer_list().contains(&firm),
+			"[Error]the firm does not exists"
+		);
+		ensure!(
+			<balances::Module<T>>::free_balance(to.clone()) >= total_price,
+			"[Error]you don't have enough free balance for this trade"
+		);
 
-		let shares_subbed = shares_before_trans.checked_sub(amount_to_send)
+		let shares_subbed = shares_before_trans
+			.checked_sub(amount_to_send)
 			.ok_or("[Error]underflow while subtracting shares")?;
 
-		let shares_added = Self::owned_shares((to.clone(), firm.clone())).checked_add(amount_to_send)
+		let shares_added = Self::owned_shares((to.clone(), firm.clone()))
+			.checked_add(amount_to_send)
 			.ok_or("[Error]overflow while adding shares")?;
+		// the account receiving the share will send the money to the person sending it
+		<balances::Module<T> as Currency<_>>::transfer(&to, &from, total_price)?;
 
 		// update the senders share amount
 		<OwnedShares<T>>::insert((from.clone(), firm.clone()), shares_subbed);
 		// update the receiver's amount
 		<OwnedShares<T>>::insert((to.clone(), firm.clone()), shares_added);
+		// update the last bid price for this share
+		<LastBidPrice<T>>::insert(firm.clone(), price_per_share);
 
 		Self::deposit_event(RawEvent::TransferredShares(from, to, firm, amount_to_send));
 
@@ -523,26 +506,27 @@ impl <T:Trait> Module<T> {
 	fn generate_hash(sender: T::AccountId) -> T::Hash {
 		let nonce = Self::nonce();
 		<Nonce<T>>::put(nonce + 1);
-		(<system::Module<T>>::random_seed(), &sender, nonce).using_encoded(<T as system::Trait>::Hashing::hash)
+		(<system::Module<T>>::random_seed(), &sender, nonce)
+			.using_encoded(<T as system::Trait>::Hashing::hash)
 	}
 
 	// BConverts `u64` to `T::Balance` using the `As` trait, with `T: u64`, and then calling `sa`
-    fn u64_to_balance(input: u64) -> T::Balance {
-        <T::Balance as As<u64>>::sa(input)
-    }
+	fn u64_to_balance(input: u64) -> T::Balance {
+		<T::Balance as As<u64>>::sa(input)
+	}
 
 	/// Convert and return T::Balance into a u64
-    fn balance_to_u64(input: T::Balance) -> u64 {
-        input.as_()
-    }
+	fn balance_to_u64(input: T::Balance) -> u64 {
+		input.as_()
+	}
 
 	fn add_sell_order_to_blockchain(
 		from: T::AccountId,
-		firm: T::AccountId, 
-		owner: T::AccountId, 
-		min_price: T::Balance, 
-		amount: u64,){
-
+		firm: T::AccountId,
+		owner: T::AccountId,
+		min_price: T::Balance,
+		amount: u64,
+	) {
 		let new_hash = Self::generate_hash(from.clone());
 		let make_sell_order = SellOrder {
 			firm: firm.clone(),
@@ -552,17 +536,21 @@ impl <T:Trait> Module<T> {
 			order_id: new_hash.clone(),
 		};
 		// add the order to the blockchain storage list
-		<SellOrdersList<T>>::mutate(&firm, |sell_order_list| sell_order_list.push(make_sell_order.clone()));
-		Self::deposit_event(RawEvent::SubmittedSellOrder(owner, firm, amount, min_price, new_hash));
+		<SellOrdersList<T>>::mutate(&firm, |sell_order_list| {
+			sell_order_list.push(make_sell_order.clone())
+		});
+		Self::deposit_event(RawEvent::SubmittedSellOrder(
+			owner, firm, amount, min_price, new_hash,
+		));
 	}
 
 	fn add_buy_order_to_blockchain(
 		from: T::AccountId,
-		firm: T::AccountId, 
-		owner: T::AccountId, 
-		max_price: T::Balance, 
-		amount: u64,){
-
+		firm: T::AccountId,
+		owner: T::AccountId,
+		max_price: T::Balance,
+		amount: u64,
+	) {
 		let new_hash = Self::generate_hash(from.clone());
 		let make_buy_order = BuyOrder {
 			firm: firm.clone(),
@@ -572,16 +560,22 @@ impl <T:Trait> Module<T> {
 			order_id: new_hash.clone(),
 		};
 		// add the order to the blockchain storage list
-		<BuyOrdersList<T>>::mutate(&firm, |buy_orders_list| buy_orders_list.push(make_buy_order.clone()));
-		Self::deposit_event(RawEvent::SubmittedBuyOrder(owner, firm, amount, max_price, new_hash));
+		<BuyOrdersList<T>>::mutate(&firm, |buy_orders_list| {
+			buy_orders_list.push(make_buy_order.clone())
+		});
+		Self::deposit_event(RawEvent::SubmittedBuyOrder(
+			owner, firm, amount, max_price, new_hash,
+		));
 	}
 }
 
 decl_event!(
-	pub enum Event<T> where 
-	AccountId = <T as system::Trait>::AccountId,
-	Balance = <T as balances::Trait>::Balance,
-	Hash = <T as system::Trait>::Hash {
+	pub enum Event<T>
+	where
+		AccountId = <T as system::Trait>::AccountId,
+		Balance = <T as balances::Trait>::Balance,
+		Hash = <T as system::Trait>::Hash,
+	{
 		GaveFirmIssueRight(AccountId, u64),
 		RevokedFirmIssueRight(AccountId),
 		MarketFrozen(AccountId, bool),
@@ -594,7 +588,5 @@ decl_event!(
 		SubmittedSellOrder(AccountId, AccountId, u64, Balance, Hash),
 		// parameters are sender, issuer (firm), amount, max price
 		SubmittedBuyOrder(AccountId, AccountId, u64, Balance, Hash),
-
 	}
 );
-
