@@ -3,11 +3,8 @@ use rstd::prelude::*;
 use runtime_io::{self};
 use runtime_primitives::traits::{As, CheckedMul, Hash};
 use support::{
-	decl_event, decl_module, decl_storage,
-	dispatch::Result,
-	ensure,
-	traits::{Currency, ReservableCurrency},
-	StorageMap, StorageValue,
+	decl_event, decl_module, decl_storage, dispatch::Result, ensure, traits::Currency, StorageMap,
+	StorageValue,
 };
 use system::ensure_signed;
 
@@ -79,7 +76,6 @@ decl_module! {
 		/// If there are no buy orders, this will create a new sell order which will be checked by the
 		/// other traders who call put_buy_order function.
 		pub fn put_sell_order(origin, firm: T::AccountId, amount: u64, min_price: T::Balance) -> Result {
-			//todo: the current implementation of this code is very inefficient, please refactor later
 			let sender = ensure_signed(origin)?;
 
 			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
@@ -159,9 +155,6 @@ decl_module! {
 				// combine the order list that wasn't touched, and the adjusted ones
 				new_order_list.append(&mut temp_buy_orders_list);
 
-				// as a final check, only retain the items where the quantity is over 0
-				new_order_list.retain(|x| x.amount > 0);
-
 				// replace the entire list with the new one
 				<BuyOrdersList<T>>::insert(&firm, new_order_list);
 
@@ -191,7 +184,6 @@ decl_module! {
 		/// If there are no sell orders, this will create a new buy order which will be checked by the
 		/// other traders who call put_sell_order function.
 		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: T::Balance) -> Result {
-			//todo: the current implementation of this code is very inefficient, please refactor later
 			let sender = ensure_signed(origin)?;
 			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
 
@@ -261,13 +253,10 @@ decl_module! {
 				// combine the order list that wasn't touched, and the adjusted ones
 				new_sell_list.append(&mut temp_sell_list);
 
-				// as a final check, only retain the items where the quantity is over 0
-				new_sell_list.retain(|x| x.amount > 0);
-
 				// replace the entire list with the new one
 				<SellOrdersList<T>>::insert(&firm, new_sell_list);
 
-				// if the caller could not sell all the shares
+				// if the caller could not buy all the shares
 				if remaining_shares_to_buy > 0 {
 					Self::add_sell_order_to_blockchain(sender.clone(),
 					firm.clone(),
@@ -496,6 +485,7 @@ impl<T: Trait> Module<T> {
 		<OwnedShares<T>>::insert((to.clone(), firm.clone()), shares_added);
 		// update the last bid price for this share
 		<LastBidPrice<T>>::insert(firm.clone(), price_per_share);
+		runtime_io::print("[Debug]transferred shares");
 
 		Self::deposit_event(RawEvent::TransferredShares(from, to, firm, amount_to_send));
 
