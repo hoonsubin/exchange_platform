@@ -48,6 +48,10 @@ decl_storage! {
 		/// The number of shares of the company the given Account owns (parameters: Holder, firm)
 		OwnedShares get(owned_shares): map (T::AccountId, T::AccountId) => u64;
 
+		/// The number of shares of the company for the user that is locked and cannot be touched
+		/// (parameters: Holder, firm)
+		LockedShares get(locked_shares): map (T::AccountId, T::AccountId) => u64;
+
 		/// The last traded price of the given company's share. This is used to track market price
 		LastBidPrice get(last_bid_price): map T::AccountId => T::Balance;
 
@@ -120,6 +124,8 @@ decl_module! {
 					else if order.amount <= remaining_shares {
 						runtime_io::print("[Debug]order.amount <= remaining_shares");
 
+						//todo: unlock currency before transfer
+
 						// then send all the buyer's requested amount to the buyer
 						Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price)?;
 
@@ -135,6 +141,8 @@ decl_module! {
 
 						let shares_selling = order.amount.checked_sub(remaining_shares)
 							.ok_or("[Error]underflow while calculating left shares")?;
+
+						//todo: unlock currency before transfer
 						Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price)?;
 						// remove the current order from the master list once the transaction is done
 						temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
@@ -162,14 +170,14 @@ decl_module! {
 
 			// if there are no existing buy orders with the right price in the market
 			if remaining_shares > 0 {
-				//todo: add a block limit to the order so it won't last forever, and add a share lock
 				runtime_io::print("[Debug]could not sell all the shares, creating a new sell order");
 				// create a new sell order so later buyers can check it
+				// this function will lock the shares for us
 				Self::add_sell_order_to_blockchain(sender.clone(),
 				firm.clone(),
 				sender.clone(),
 				min_price,
-				amount);
+				remaining_shares)?;
 			}
 			Ok(())
 		}
@@ -210,7 +218,9 @@ decl_module! {
 					}
 					else if order.amount <= remaining_shares_to_buy {
 						runtime_io::print("[Debug]order.amount <= remaining_shares_to_buy");
-
+						// first unlock the shares before transferring them
+						Self::unlock_shares(order.owner.clone(), order.firm.clone(), order.amount)?;
+						// transfer the shares
 						Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price)?;
 
 						remaining_shares_to_buy = remaining_shares_to_buy.checked_sub(order.amount)
@@ -227,6 +237,9 @@ decl_module! {
 						let share_left = order.amount.checked_sub(remaining_shares_to_buy)
 							.ok_or("[Error]underflow during calculation of total shares")?;
 
+						// first unlock the shares before transferring them
+						Self::unlock_shares(order.owner.clone(), order.firm.clone(), remaining_shares_to_buy)?;
+
 						Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price)?;
 
 						let adjusted_sell_order = SellOrder {
@@ -235,7 +248,6 @@ decl_module! {
 								min_price: order.min_price,
 								amount: share_left,
 								order_id: Self::generate_hash(sender.clone())
-
 							};
 
 						// push (add to the last index) the newly adjusted sell order to the master list
@@ -261,7 +273,7 @@ decl_module! {
 				firm.clone(),
 				sender.clone(),
 				max_price,
-				amount);
+				remaining_shares_to_buy)?;
 			}
 			Ok(())
 		}
@@ -270,7 +282,6 @@ decl_module! {
 		/// You can only change the number of authorized shares through the change_authorized_shares function.
 		pub fn give_issue_rights(origin, firm: T::AccountId, authorized_shares: u64) -> Result {
 			let sender = ensure_signed(origin)?;
-			
 			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 
 			// ensure that the firm is not giving themselves issue rights
@@ -431,7 +442,40 @@ impl<T: Trait> Module<T> {
 		<IssuerList<T>>::get().contains(firm)
 	}
 
-	//todo: add a lock/unlock share function
+	fn lock_shares(owner: T::AccountId, firm: T::AccountId, amount: u64) -> Result {
+		// get the currently owned amount
+		let owned = Self::owned_shares((owner.clone(), firm.clone()));
+
+		ensure!(owned >= amount, "[Error]the account does not hold enough shares");
+		// check how much will be left after the lock
+		let left_shares = owned.checked_sub(amount).ok_or("[Error]underflow while calculating shares after lock")?;
+
+		// insert the shares to the lock
+		<LockedShares<T>>::insert((owner.clone(), firm.clone()), amount);
+		// insert the shares left back to the owner
+		<OwnedShares<T>>::insert((owner.clone(), firm.clone()), left_shares);
+
+		Self::deposit_event(RawEvent::LockedShares(owner, firm, amount));
+
+		Ok(())
+	}
+
+	fn unlock_shares(owner: T::AccountId, firm: T::AccountId, amount: u64) -> Result {
+		let locked = Self::locked_shares((owner.clone(), firm.clone()));
+		ensure!(locked >= amount, "[Error]cannot unlock more than what is locked");
+
+		// locked - amount
+		let subbed_locked = locked.checked_sub(amount).ok_or("[Error]underflow while calculating shares after unlock")?;
+		// amount + currently owned share
+		let total_shares = amount.checked_add(Self::owned_shares((owner.clone(), firm.clone())))
+			.ok_or("[Error]overflow while calculating total shares after unlock")?;
+		<OwnedShares<T>>::insert((owner.clone(), firm.clone()), total_shares);
+		<LockedShares<T>>::insert((owner.clone(), firm.clone()), subbed_locked);
+
+		Self::deposit_event(RawEvent::UnlockedShares(owner, firm, amount));
+
+		Ok(())
+	}
 
 	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId.
 	/// And the `to` account will send the `price_per_share` to the `from` account.
@@ -452,10 +496,6 @@ impl<T: Trait> Module<T> {
 		ensure!(
 			shares_before_trans >= amount_to_send,
 			"[Error]you do not own enough shares so send"
-		);
-		ensure!(
-			Self::issuer_list().contains(&firm),
-			"[Error]the firm does not exists"
 		);
 		ensure!(
 			<balances::Module<T>>::free_balance(to.clone()) >= total_price,
@@ -509,7 +549,11 @@ impl<T: Trait> Module<T> {
 		owner: T::AccountId,
 		min_price: T::Balance,
 		amount: u64,
-	) {
+	) -> Result {
+		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
+		ensure!(Self::owned_shares((owner.clone(), firm.clone())) >= amount,
+			"[Error]the owner does not own enough shares");
+
 		let new_hash = Self::generate_hash(from.clone());
 		let make_sell_order = SellOrder {
 			firm: firm.clone(),
@@ -522,9 +566,12 @@ impl<T: Trait> Module<T> {
 		<SellOrdersList<T>>::mutate(&firm, |sell_order_list| {
 			sell_order_list.push(make_sell_order.clone())
 		});
+		Self::lock_shares(owner.clone(), firm.clone(), amount)?;
 		Self::deposit_event(RawEvent::SubmittedSellOrder(
 			owner, firm, amount, min_price, new_hash,
 		));
+
+		Ok(())
 	}
 
 	fn add_buy_order_to_blockchain(
@@ -533,7 +580,19 @@ impl<T: Trait> Module<T> {
 		owner: T::AccountId,
 		max_price: T::Balance,
 		amount: u64,
-	) {
+	) -> Result {
+		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
+
+		// calculate the total price for this transfer
+		let total_price = max_price
+			.checked_mul(&Self::u64_to_balance(amount.clone()))
+			.ok_or("[Error]overflow in calculating total price")?;
+		
+		ensure!(
+			<balances::Module<T>>::free_balance(owner.clone()) >= total_price,
+			"[Error]you don't have enough free balance for this trade"
+		);
+
 		let new_hash = Self::generate_hash(from.clone());
 		let make_buy_order = BuyOrder {
 			firm: firm.clone(),
@@ -549,6 +608,8 @@ impl<T: Trait> Module<T> {
 		Self::deposit_event(RawEvent::SubmittedBuyOrder(
 			owner, firm, amount, max_price, new_hash,
 		));
+
+		Ok(())
 	}
 }
 
@@ -571,5 +632,9 @@ decl_event!(
 		SubmittedSellOrder(AccountId, AccountId, u64, Balance, Hash),
 		// parameters are sender, issuer (firm), amount, max price
 		SubmittedBuyOrder(AccountId, AccountId, u64, Balance, Hash),
+		// parameters are owner, issuer (firm), amount
+		LockedShares(AccountId, AccountId, u64),
+		// parameters are owner, issuer (firm), amount
+		UnlockedShares(AccountId, AccountId, u64),
 	}
 );
