@@ -98,10 +98,11 @@ decl_module! {
 			// only get the orders where the max price is lower or equal to the min price, and is not expired
 			temp_buy_orders_list.retain(|x| x.max_price >= min_price && x.amount > 0);
 
+			// used to track how much shares the caller needs to sell
+			let mut remaining_shares = amount;
+
 			// check if the number orders are greater than 0
 			if temp_buy_orders_list.len() > 0 {
-				// used to track how much shares the caller needs to sell
-				let mut remaining_shares = amount;
 
 				// sort the vector from lower max_price to high
 				//todo: requires check if this actually works well
@@ -157,19 +158,12 @@ decl_module! {
 
 				// replace the entire list with the new one
 				<BuyOrdersList<T>>::insert(&firm, new_order_list);
-
-				// if the caller could not sell all the shares
-				if remaining_shares > 0 {
-					Self::add_sell_order_to_blockchain(sender.clone(),
-					firm.clone(),
-					sender.clone(),
-					min_price,
-					remaining_shares);
-				}
 			}
-			else { // if there are no existing buy orders with the right price in the market
 
-				runtime_io::print("[Debug]no buy orders in given price point, will make a new sell order");
+			// if there are no existing buy orders with the right price in the market
+			if remaining_shares > 0 {
+				//todo: add a block limit to the order so it won't last forever, and add a share lock
+				runtime_io::print("[Debug]could not sell all the shares, creating a new sell order");
 				// create a new sell order so later buyers can check it
 				Self::add_sell_order_to_blockchain(sender.clone(),
 				firm.clone(),
@@ -199,10 +193,11 @@ decl_module! {
 			// we will be making adjustments to this list to update the global list
 			temp_sell_list.retain(|x| x.min_price <= max_price && x.amount > 0);
 
+			// track the shares to buy
+			let mut remaining_shares_to_buy = amount;
+
 			// check if the number of valid orders are greater than 0
 			if temp_sell_list.len() > 0 {
-				let mut remaining_shares_to_buy = amount;
-
 				// sort the vector from highest min_price to low
 				//todo: requires check if this actually works well
 				temp_sell_list.sort_by(|a, b| b.min_price.cmp(&a.min_price));
@@ -255,19 +250,12 @@ decl_module! {
 
 				// replace the entire list with the new one
 				<SellOrdersList<T>>::insert(&firm, new_sell_list);
-
-				// if the caller could not buy all the shares
-				if remaining_shares_to_buy > 0 {
-					Self::add_sell_order_to_blockchain(sender.clone(),
-					firm.clone(),
-					sender.clone(),
-					max_price,
-					remaining_shares_to_buy);
-				}
-
 			}
-			else { // if there are no good orders in the market
-				runtime_io::print("[Debug]no sell orders in given price point, will make a new buy order");
+
+			// if there are no good orders in the market
+			if remaining_shares_to_buy > 0 {
+				//todo: add a block limit to the order so it won't last forever, and add a currency lock
+				runtime_io::print("[Debug]could not buy all the shares, creating a new buy order");
 				// create a new sell order so later buyers can check it
 				Self::add_buy_order_to_blockchain(sender.clone(),
 				firm.clone(),
@@ -354,8 +342,8 @@ decl_module! {
 			let new_shares_outstanding = old_shares_outstanding.checked_add(amount.clone())
 				.ok_or("[Error]overflowing when issuing new shares")?;
 
-			ensure!(new_shares_outstanding < Self::authorized_shares(&sender)
-			, "[Error]already issued the maximum amount of shares");
+			ensure!(new_shares_outstanding < Self::authorized_shares(&sender),
+				"[Error]already issued the maximum amount of shares");
 
 			// add the firm to the list if it is not in there
 			if !Self::is_firm(&sender) {
@@ -389,8 +377,6 @@ decl_module! {
 			//let new_float = Self::floating_shares(&sender) - amount;
 			let new_float = Self::floating_shares(&sender).checked_sub(amount)
 				.ok_or("[Error]underflow while subtracting floating shares")?;
-
-			//todo: check and remove the firm's name from the IssuerList if the total floating share becomes 0
 			if Self::is_firm(&sender) && new_float == 0{
 				let mut current_firms = Self::issuer_list();
 				current_firms.retain(|x| x != &sender);
@@ -433,12 +419,14 @@ decl_module! {
 	}
 }
 
-// private functions for the runtime module
+// private functions for the runtime module. This is not exposed to the RPC
 impl<T: Trait> Module<T> {
 	/// checks if the given AccountId has share issue rights
 	fn is_firm(firm: &T::AccountId) -> bool {
 		<IssuerList<T>>::get().contains(firm)
 	}
+
+	//todo: add a lock/unlock share function
 
 	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId.
 	/// And the `to` account will send the `price_per_share` to the `from` account.
