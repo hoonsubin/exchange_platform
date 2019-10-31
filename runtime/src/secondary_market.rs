@@ -28,7 +28,7 @@ pub struct SellOrder<AccountId, Balance, Hash> {
 	order_id: Hash,
 }
 
-pub trait Trait: balances::Trait {
+pub trait Trait: balances::Trait + sudo::Trait {
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 }
 
@@ -269,8 +269,9 @@ decl_module! {
 		/// Give a given company the right to issue shares with the given authorized shares.
 		/// You can only change the number of authorized shares through the change_authorized_shares function.
 		pub fn give_issue_rights(origin, firm: T::AccountId, authorized_shares: u64) -> Result {
-			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
+			
+			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 
 			// ensure that the firm is not giving themselves issue rights
 			ensure!(sender != firm, "[Error]you cannot give rights to yourself");
@@ -297,8 +298,8 @@ decl_module! {
 		/// Revoke the right to issue shares for the given company (AccountId).
 		/// This will not change the number of authorized shares or any floating shares.
 		pub fn revoke_issue_rights(origin, firm: T::AccountId) -> Result {
-			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
+			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 			ensure!(sender != firm, "[Error]you cannot take rights to yourself");
 			ensure!(Self::is_allowed_issue(&firm) == true, "[Error]the firm is already not allowed to issue shares");
 
@@ -314,8 +315,8 @@ decl_module! {
 		/// You cannot decrease the authorized shares below the floating shares.
 		/// This will not change the number of floating shares.
 		pub fn change_authorized_shares(origin, firm: T::AccountId, new_limit: u64) -> Result {
-			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
+			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 			ensure!(<IsAllowedIssue<T>>::get(&firm), "[Error]the firm is not allowed to issue shares");
 			ensure!(sender != firm.clone(), "[Error]you cannot change your own issue limit");
 			ensure!(new_limit > Self::floating_shares(&firm), "[Error]the firm cannot limit shares \
@@ -393,9 +394,11 @@ decl_module! {
 			Ok(())
 		}
 
+		/// Changes the `MarketFreeze` storage value to true. This will prevent any trading from happening.
+		/// Only accounts with sudo keys can call this
 		pub fn freeze_market(origin) -> Result {
-			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
+			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 
 			ensure!(!Self::market_freeze(), "[Error]the market is already frozen");
 
@@ -405,9 +408,11 @@ decl_module! {
 			Ok(())
 		}
 
+		/// Changes the `MarketFreeze` storage value to false. This will allow all trades to happen.
+		/// Only accounts with sudo keys can call this
 		pub fn unfreeze_market(origin) -> Result {
-			// todo: make this ensure that origin is root
 			let sender = ensure_signed(origin)?;
+			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 
 			ensure!(Self::market_freeze(), "[Error]the market is already not frozen");
 
