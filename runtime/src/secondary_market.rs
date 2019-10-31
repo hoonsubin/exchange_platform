@@ -127,12 +127,15 @@ decl_module! {
 						//todo: unlock currency before transfer
 
 						// then send all the buyer's requested amount to the buyer
-						Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price)?;
-
-						remaining_shares = remaining_shares.checked_sub(order.amount).ok_or("[Error]underflow while subtracting new shares")?;
-
-						// remove the current order from the master list once the transaction is done
-						temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
+						// pattern match so we can move on to the next order when there is an error
+						match Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price) {
+							Err(_e) => continue,
+							Ok(_v) => {
+								remaining_shares = remaining_shares.checked_sub(order.amount).ok_or("[Error]underflow while subtracting new shares")?;
+								// remove the current order from the master list once the transaction is done
+								temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
+							},
+						}
 					}
 					// if the amount of buy is greater than the amount to sell
 					else if order.amount > remaining_shares {
@@ -141,24 +144,28 @@ decl_module! {
 
 						let shares_selling = order.amount.checked_sub(remaining_shares)
 							.ok_or("[Error]underflow while calculating left shares")?;
-
 						//todo: unlock currency before transfer
-						Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price)?;
-						// remove the current order from the master list once the transaction is done
-						temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
 
-						let new_buy_order = BuyOrder{
-							firm: order.firm,
-							owner: order.owner,
-							max_price: order.max_price,
-							amount: shares_selling,
-							order_id: Self::generate_hash(sender.clone()),
-						};
+						// pattern match so we can move on to the next order when there is an error
+						match Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
+							Err(_e) => continue,
+							Ok(_v) => {
+								// remove the current order from the master list once the transaction is done
+								temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
 
-						// add the adjusted order to the list
-						temp_buy_orders_list.push(new_buy_order);
-						// break out of the for loop once the caller sold all the shares
-						break;
+								let new_buy_order = BuyOrder{
+									firm: order.firm,
+									owner: order.owner,
+									max_price: order.max_price,
+									amount: shares_selling,
+									order_id: Self::generate_hash(sender.clone()),
+								};
+								// add the adjusted order to the list
+								temp_buy_orders_list.push(new_buy_order);
+								// break out of the for loop once the caller sold all the shares
+								break;
+							},
+						}
 					}
 				}
 				// combine the order list that wasn't touched, and the adjusted ones
@@ -219,15 +226,23 @@ decl_module! {
 					else if order.amount <= remaining_shares_to_buy {
 						runtime_io::print("[Debug]order.amount <= remaining_shares_to_buy");
 						// first unlock the shares before transferring them
-						Self::unlock_shares(order.owner.clone(), order.firm.clone(), order.amount)?;
-						// transfer the shares
-						Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price)?;
+						match Self::unlock_shares(order.owner.clone(), order.firm.clone(), order.amount) {
+							// continue on to the next loop when there is an error
+							Err(_e) => continue,
+							Ok(_v) => {
+								// transfer the shares to the caller
+								match Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price) {
+									Err(_e) => continue,
+									Ok(_v) => {
+										remaining_shares_to_buy = remaining_shares_to_buy.checked_sub(order.amount)
+											.ok_or("[Error]underflow while subtracting new shares")?;
 
-						remaining_shares_to_buy = remaining_shares_to_buy.checked_sub(order.amount)
-							.ok_or("[Error]underflow while subtracting new shares")?;
-
-						// remove the current order from the master list once the transaction is done
-						temp_sell_list.retain(|x| x.order_id != order.order_id);
+										// remove the current order from the master list once the transaction is done
+										temp_sell_list.retain(|x| x.order_id != order.order_id);
+									},
+								}
+							},
+						}
 					}
 					// if the amount of buy is greater than the amount to sell
 					else if order.amount > remaining_shares_to_buy {
@@ -236,23 +251,29 @@ decl_module! {
 
 						let share_left = order.amount.checked_sub(remaining_shares_to_buy)
 							.ok_or("[Error]underflow during calculation of total shares")?;
+						match Self::unlock_shares(order.owner.clone(), order.firm.clone(), remaining_shares_to_buy) {
+							// continue on to the next loop when there is an error
+							Err(_e) => continue,
+							Ok(_v) => {
+								// transfer the shares to the caller
+								match Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price) {
+									Err(_e) => continue,
+									Ok(_v) => {
+										// make a new sell order with the subtracted amount
+										let adjusted_sell_order = SellOrder {
+											firm: order.firm,
+											owner: order.owner,
+											min_price: order.min_price,
+											amount: share_left,
+											order_id: Self::generate_hash(sender.clone())
+										};
 
-						// first unlock the shares before transferring them
-						Self::unlock_shares(order.owner.clone(), order.firm.clone(), remaining_shares_to_buy)?;
-
-						Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price)?;
-
-						let adjusted_sell_order = SellOrder {
-								firm: order.firm,
-								owner: order.owner,
-								min_price: order.min_price,
-								amount: share_left,
-								order_id: Self::generate_hash(sender.clone())
-							};
-
-						// push (add to the last index) the newly adjusted sell order to the master list
-						temp_sell_list.push(adjusted_sell_order);
-
+										// push (add to the last index) the newly adjusted sell order to the master list
+										temp_sell_list.push(adjusted_sell_order);
+									},
+								}
+							},
+						}
 						// break out of the for loop to combine the adjusted list
 						break;
 					}
@@ -446,9 +467,14 @@ impl<T: Trait> Module<T> {
 		// get the currently owned amount
 		let owned = Self::owned_shares((owner.clone(), firm.clone()));
 
-		ensure!(owned >= amount, "[Error]the account does not hold enough shares");
+		ensure!(
+			owned >= amount,
+			"[Error]the account does not hold enough shares"
+		);
 		// check how much will be left after the lock
-		let left_shares = owned.checked_sub(amount).ok_or("[Error]underflow while calculating shares after lock")?;
+		let left_shares = owned
+			.checked_sub(amount)
+			.ok_or("[Error]underflow while calculating shares after lock")?;
 
 		// insert the shares to the lock
 		<LockedShares<T>>::insert((owner.clone(), firm.clone()), amount);
@@ -462,12 +488,18 @@ impl<T: Trait> Module<T> {
 
 	fn unlock_shares(owner: T::AccountId, firm: T::AccountId, amount: u64) -> Result {
 		let locked = Self::locked_shares((owner.clone(), firm.clone()));
-		ensure!(locked >= amount, "[Error]cannot unlock more than what is locked");
+		ensure!(
+			locked >= amount,
+			"[Error]cannot unlock more than what is locked"
+		);
 
 		// locked - amount
-		let subbed_locked = locked.checked_sub(amount).ok_or("[Error]underflow while calculating shares after unlock")?;
+		let subbed_locked = locked
+			.checked_sub(amount)
+			.ok_or("[Error]underflow while calculating shares after unlock")?;
 		// amount + currently owned share
-		let total_shares = amount.checked_add(Self::owned_shares((owner.clone(), firm.clone())))
+		let total_shares = amount
+			.checked_add(Self::owned_shares((owner.clone(), firm.clone())))
 			.ok_or("[Error]overflow while calculating total shares after unlock")?;
 		<OwnedShares<T>>::insert((owner.clone(), firm.clone()), total_shares);
 		<LockedShares<T>>::insert((owner.clone(), firm.clone()), subbed_locked);
@@ -550,9 +582,14 @@ impl<T: Trait> Module<T> {
 		min_price: T::Balance,
 		amount: u64,
 	) -> Result {
-		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
-		ensure!(Self::owned_shares((owner.clone(), firm.clone())) >= amount,
-			"[Error]the owner does not own enough shares");
+		ensure!(
+			Self::issuer_list().contains(&firm),
+			"[Error]the firm does not exists"
+		);
+		ensure!(
+			Self::owned_shares((owner.clone(), firm.clone())) >= amount,
+			"[Error]the owner does not own enough shares"
+		);
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_sell_order = SellOrder {
@@ -581,13 +618,15 @@ impl<T: Trait> Module<T> {
 		max_price: T::Balance,
 		amount: u64,
 	) -> Result {
-		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
+		ensure!(
+			Self::issuer_list().contains(&firm),
+			"[Error]the firm does not exists"
+		);
 
 		// calculate the total price for this transfer
 		let total_price = max_price
 			.checked_mul(&Self::u64_to_balance(amount.clone()))
 			.ok_or("[Error]overflow in calculating total price")?;
-		
 		ensure!(
 			<balances::Module<T>>::free_balance(owner.clone()) >= total_price,
 			"[Error]you don't have enough free balance for this trade"
