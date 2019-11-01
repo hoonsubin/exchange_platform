@@ -79,12 +79,20 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
+		pub fn unreserve_currency(origin, amount: T::Balance) -> Result {
+			let sender = ensure_signed(origin)?;
+
+			let _ = <balances::Module<T>>::unreserve(&sender, amount);
+
+			Ok(())
+		}
+
 		/// Searches the current buy orders and see if there is a price match for the transaction.
 		/// If there are no buy orders, this will create a new sell order which will be checked by the
 		/// other traders who call put_buy_order function.
 		pub fn put_sell_order(origin, firm: T::AccountId, amount: u64, min_price: T::Balance) -> Result {
 			let sender = ensure_signed(origin)?;
-
+			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
 			ensure!(Self::balance_to_u64(min_price.clone()) > 0, "[Error]you cannot sell for 0");
 			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount,
@@ -112,9 +120,7 @@ decl_module! {
 			if temp_buy_orders_list.len() > 0 {
 
 				// sort the vector from lower max_price to high
-				//todo: requires check if this actually works well
 				temp_buy_orders_list.sort_by(|a, b| a.max_price.cmp(&b.max_price));
-				runtime_io::print("[Debug]found a good list of buy orders");
 
 				// we are cloning the master list because we will be making changes to it during the loop
 				for order in temp_buy_orders_list.clone() {
@@ -126,6 +132,11 @@ decl_module! {
 					// check if the order of the share is enough
 					else if order.amount <= remaining_shares {
 						runtime_io::print("[Debug]order.amount <= remaining_shares");
+
+						// unreserve the total value of the order
+						<balances::Module<T>>::unreserve(&order.owner, order.max_price
+							.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("[Error]overflow while calculating total price")?);
+
 
 						// then send all the buyer's requested amount to the buyer
 						// pattern match so we can move on to the next order when there is an error
@@ -141,11 +152,12 @@ decl_module! {
 					// if the amount of buy is greater than the amount to sell
 					else if order.amount > remaining_shares {
 
-						runtime_io::print("[Debug]order.amount > remaining_shares");
-
 						let shares_selling = order.amount.checked_sub(remaining_shares)
 							.ok_or("[Error]underflow while calculating left shares")?;
-						
+						// unreserve the total value of the order
+						<balances::Module<T>>::unreserve(&order.owner, order.max_price
+							.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("[Error]overflow while calculating total price")?);
+
 						// pattern match so we can move on to the next order when there is an error
 						match Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
 							Err(_e) => continue,
@@ -185,7 +197,6 @@ decl_module! {
 
 			// if there are no existing buy orders with the right price in the market
 			if remaining_shares > 0 {
-				runtime_io::print("[Debug]could not sell all the shares, creating a new sell order");
 				// create a new sell order so later buyers can check it
 				// this function will lock the shares for us
 				Self::add_sell_order_to_blockchain(sender.clone(),
@@ -202,7 +213,15 @@ decl_module! {
 		/// other traders who call put_sell_order function.
 		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: T::Balance) -> Result {
 			let sender = ensure_signed(origin)?;
+			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
+			ensure!(Self::balance_to_u64(max_price.clone()) > 0, "[Error]you cannot buy for 0");
+
+			// check if the caller has enough balance
+			let total_price = max_price.checked_mul(&Self::u64_to_balance(amount.clone()))
+				.ok_or("[Error]overflow in calculating total price")?;
+			ensure!(<balances::Module<T>>::free_balance(&sender) >= total_price,
+				"[Error]you don't have enough free balance for this trade");
 
 			let sell_order_list = Self::sell_order_list(&firm);
 			// create two copies of the master list.
@@ -222,17 +241,14 @@ decl_module! {
 			// check if the number of valid orders are greater than 0
 			if temp_sell_list.len() > 0 {
 				// sort the vector from highest min_price to low
-				//todo: requires check if this actually works well
 				temp_sell_list.sort_by(|a, b| b.min_price.cmp(&a.min_price));
 
 				for order in temp_sell_list.clone(){
 					// break the loop if the caller bought all the shares
 					if remaining_shares_to_buy == 0 {
-						runtime_io::print("[Debug]remaining_shares_to_buy == 0");
 						break;
 					}
 					else if order.amount <= remaining_shares_to_buy {
-						runtime_io::print("[Debug]order.amount <= remaining_shares_to_buy");
 						// first unlock the shares before transferring them
 						match Self::unlock_shares(order.owner.clone(), order.firm.clone(), order.amount) {
 							// continue on to the next loop when there is an error
@@ -254,8 +270,6 @@ decl_module! {
 					}
 					// if the amount of buy is greater than the amount to sell
 					else if order.amount > remaining_shares_to_buy {
-
-						runtime_io::print("[Debug]remaining_shares_to_buy > 0");
 
 						let share_left = order.amount.checked_sub(remaining_shares_to_buy)
 							.ok_or("[Error]underflow during calculation of total shares")?;
@@ -295,7 +309,6 @@ decl_module! {
 
 			// if there are no good orders in the market
 			if remaining_shares_to_buy > 0 {
-				runtime_io::print("[Debug]could not buy all the shares, creating a new buy order");
 				// create a new sell order so later buyers can check it
 				// this function also handles the currency lock as well
 				Self::add_buy_order_to_blockchain(sender.clone(),
@@ -475,10 +488,7 @@ impl<T: Trait> Module<T> {
 		// get the currently owned amount
 		let owned = Self::owned_shares((owner.clone(), firm.clone()));
 
-		ensure!(
-			owned >= amount,
-			"[Error]the account does not hold enough shares"
-		);
+		ensure!(owned >= amount,"[Error]the account does not hold enough shares");
 		// check how much will be left after the lock
 		let left_shares = owned
 			.checked_sub(amount)
@@ -496,10 +506,7 @@ impl<T: Trait> Module<T> {
 
 	fn unlock_shares(owner: T::AccountId, firm: T::AccountId, amount: u64) -> Result {
 		let locked = Self::locked_shares((owner.clone(), firm.clone()));
-		ensure!(
-			locked >= amount,
-			"[Error]cannot unlock more than what is locked"
-		);
+		ensure!(locked >= amount, "[Error]cannot unlock more than what is locked");
 
 		// locked - amount
 		let subbed_locked = locked
@@ -533,25 +540,7 @@ impl<T: Trait> Module<T> {
 		let total_price = price_per_share
 			.checked_mul(&Self::u64_to_balance(amount_to_send))
 			.ok_or("[Error]overflow in calculating total price")?;
-		ensure!(
-			shares_before_trans >= amount_to_send,
-			"[Error]you do not own enough shares so send"
-		);
-
-		/*
-		ensure!(
-			<balances::Module<T>>::free_balance(&to) >= total_price,
-			"[Error]you don't have enough free balance for this trade"
-		);
-		*/
-
-		ensure!(
-			<balances::Module<T>>::reserved_balance(&to) >= total_price,
-			"[Error]you don't have enough reserved balance for this trade"
-		);
-
-		// unreserve the total value of the order
-		<balances::Module<T>>::unreserve(&to, total_price);
+		ensure!(shares_before_trans >= amount_to_send, "[Error]you do not own enough shares so send");
 
 		let shares_subbed = shares_before_trans
 			.checked_sub(amount_to_send)
@@ -601,14 +590,7 @@ impl<T: Trait> Module<T> {
 		min_price: T::Balance,
 		amount: u64,
 	) -> Result {
-		ensure!(
-			Self::issuer_list().contains(&firm),
-			"[Error]the firm does not exists"
-		);
-		ensure!(
-			Self::owned_shares((owner.clone(), firm.clone())) >= amount,
-			"[Error]the owner does not own enough shares"
-		);
+		ensure!(Self::issuer_list().contains(&firm),"[Error]the firm does not exists");
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_sell_order = SellOrder {
@@ -622,6 +604,8 @@ impl<T: Trait> Module<T> {
 		<SellOrdersList<T>>::mutate(&firm, |sell_order_list| {
 			sell_order_list.push(make_sell_order.clone())
 		});
+
+		// lock the shares
 		Self::lock_shares(owner.clone(), firm.clone(), amount)?;
 		Self::deposit_event(RawEvent::SubmittedSellOrder(
 			owner, firm, amount, min_price, new_hash,
@@ -646,10 +630,6 @@ impl<T: Trait> Module<T> {
 		let total_price = max_price
 			.checked_mul(&Self::u64_to_balance(amount.clone()))
 			.ok_or("[Error]overflow in calculating total price")?;
-		ensure!(
-			<balances::Module<T>>::free_balance(&owner) >= total_price,
-			"[Error]you don't have enough free balance for this trade"
-		);
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_buy_order = BuyOrder {
