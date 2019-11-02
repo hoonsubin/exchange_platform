@@ -98,14 +98,11 @@ decl_module! {
 			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount,
 				"[Error]you do not own enough shares of this company");
 			// get the entire buy orders from the blockchain
-			// we only call this once to save memory
-			let buy_orders_list = Self::buy_orders_list(&firm);
-
 			// a mutable copy of the list that we will be making changes to
-			let mut temp_buy_orders_list = buy_orders_list.clone();
+			let mut temp_buy_orders_list = Self::buy_orders_list(&firm);
 
 			// this is also a clone of the master list, but we will not make changes to this one
-			let mut new_order_list = buy_orders_list.clone();
+			let mut new_order_list = temp_buy_orders_list.clone();
 
 			// make a new list of all the orders that are not going to be mutated
 			new_order_list.retain(|x| x.max_price < min_price);
@@ -136,7 +133,6 @@ decl_module! {
 						// unreserve the total value of the order
 						<balances::Module<T>>::unreserve(&order.owner, order.max_price
 							.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("[Error]overflow while calculating total price")?);
-
 
 						// then send all the buyer's requested amount to the buyer
 						// pattern match so we can move on to the next order when there is an error
@@ -222,11 +218,9 @@ decl_module! {
 				.ok_or("[Error]overflow in calculating total price")?;
 			ensure!(<balances::Module<T>>::free_balance(&sender) >= total_price,
 				"[Error]you don't have enough free balance for this trade");
-
-			let sell_order_list = Self::sell_order_list(&firm);
 			// create two copies of the master list.
-			let mut temp_sell_list = sell_order_list.clone();
-			let mut new_sell_list = sell_order_list.clone();
+			let mut temp_sell_list = Self::sell_order_list(&firm);
+			let mut new_sell_list = temp_sell_list.clone();
 
 			// make a new list of all the orders that are not going to be mutated
 			new_sell_list.retain(|x| x.min_price > max_price);
@@ -484,11 +478,13 @@ impl<T: Trait> Module<T> {
 		<IssuerList<T>>::get().contains(firm)
 	}
 
+	/// Lock the given `amount` of shares that the `owner` has for the `firm`.
+	/// Locking the shares ensures that those shares will not be spent until it is unlocked
 	fn lock_shares(owner: T::AccountId, firm: T::AccountId, amount: u64) -> Result {
 		// get the currently owned amount
 		let owned = Self::owned_shares((owner.clone(), firm.clone()));
 
-		ensure!(owned >= amount,"[Error]the account does not hold enough shares");
+		ensure!(owned >= amount, "[Error]the account does not hold enough shares");
 		// check how much will be left after the lock
 		let left_shares = owned
 			.checked_sub(amount)
@@ -504,6 +500,8 @@ impl<T: Trait> Module<T> {
 		Ok(())
 	}
 
+	/// Unlock the given `amount` of shares that the `owner` has for the `firm`.
+	/// Unlocking shares will transfer the locked shares to the owned shares
 	fn unlock_shares(owner: T::AccountId, firm: T::AccountId, amount: u64) -> Result {
 		let locked = Self::locked_shares((owner.clone(), firm.clone()));
 		ensure!(locked >= amount, "[Error]cannot unlock more than what is locked");
@@ -583,6 +581,8 @@ impl<T: Trait> Module<T> {
 		input.as_()
 	}
 
+	/// Adds a sell order to the blockchain storage list
+	/// This will also automatically lock the `amount` of shares
 	fn add_sell_order_to_blockchain(
 		from: T::AccountId,
 		firm: T::AccountId,
@@ -590,7 +590,7 @@ impl<T: Trait> Module<T> {
 		min_price: T::Balance,
 		amount: u64,
 	) -> Result {
-		ensure!(Self::issuer_list().contains(&firm),"[Error]the firm does not exists");
+		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_sell_order = SellOrder {
@@ -614,6 +614,8 @@ impl<T: Trait> Module<T> {
 		Ok(())
 	}
 
+	/// Adds a buy order to the blockchain storage list
+	/// This will also reserve the balance of `owner` by `max_price` * `amount`
 	fn add_buy_order_to_blockchain(
 		from: T::AccountId,
 		firm: T::AccountId,
@@ -621,14 +623,11 @@ impl<T: Trait> Module<T> {
 		max_price: T::Balance,
 		amount: u64,
 	) -> Result {
-		ensure!(
-			Self::issuer_list().contains(&firm),
-			"[Error]the firm does not exists"
-		);
+
+		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
 
 		// calculate the total price for this transfer
-		let total_price = max_price
-			.checked_mul(&Self::u64_to_balance(amount.clone()))
+		let total_price = max_price.checked_mul(&Self::u64_to_balance(amount.clone()))
 			.ok_or("[Error]overflow in calculating total price")?;
 
 		let new_hash = Self::generate_hash(from.clone());
