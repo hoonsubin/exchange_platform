@@ -6,7 +6,7 @@ use support::{
 	decl_event, decl_module, decl_storage,
 	dispatch::Result,
 	ensure,
-	traits::{Currency, ReservableCurrency},
+	traits::{Currency},
 	StorageMap, StorageValue,
 };
 use system::ensure_signed;
@@ -79,14 +79,6 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
-		pub fn unreserve_currency(origin, amount: T::Balance) -> Result {
-			let sender = ensure_signed(origin)?;
-
-			let _ = <balances::Module<T>>::unreserve(&sender, amount);
-
-			Ok(())
-		}
-
 		/// Searches the current buy orders and see if there is a price match for the transaction.
 		/// If there are no buy orders, this will create a new sell order which will be checked by the
 		/// other traders who call put_buy_order function.
@@ -122,17 +114,12 @@ decl_module! {
 				// we are cloning the master list because we will be making changes to it during the loop
 				for order in temp_buy_orders_list.clone() {
 
-					if remaining_shares == 0 { // break the loop if the caller sold all the shares
-						runtime_io::print("[Debug]remaining_shares == 0");
+					if remaining_shares == 0 {
+						// break the loop if the caller sold all the shares
 						break;
 					}
 					// check if the order of the share is enough
 					else if order.amount <= remaining_shares {
-						runtime_io::print("[Debug]order.amount <= remaining_shares");
-
-						// unreserve the total value of the order
-						<balances::Module<T>>::unreserve(&order.owner, order.max_price
-							.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("[Error]overflow while calculating total price")?);
 
 						// then send all the buyer's requested amount to the buyer
 						// pattern match so we can move on to the next order when there is an error
@@ -150,9 +137,6 @@ decl_module! {
 
 						let shares_selling = order.amount.checked_sub(remaining_shares)
 							.ok_or("[Error]underflow while calculating left shares")?;
-						// unreserve the total value of the order
-						<balances::Module<T>>::unreserve(&order.owner, order.max_price
-							.checked_mul(&Self::u64_to_balance(order.amount)).ok_or("[Error]overflow while calculating total price")?);
 
 						// pattern match so we can move on to the next order when there is an error
 						match Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
@@ -173,8 +157,6 @@ decl_module! {
 								let _total_price = order.max_price
 									.checked_mul(&Self::u64_to_balance(shares_selling))
 									.ok_or("[Error]overflow in calculating total price")?;
-								// reserve the total value of the order to make sure the owner has the money
-								<balances::Module<T>>::reserve(&order.owner, _total_price)?;
 
 								// add the adjusted order to the list
 								temp_buy_orders_list.push(new_buy_order);
@@ -615,7 +597,6 @@ impl<T: Trait> Module<T> {
 	}
 
 	/// Adds a buy order to the blockchain storage list
-	/// This will also reserve the balance of `owner` by `max_price` * `amount`
 	fn add_buy_order_to_blockchain(
 		from: T::AccountId,
 		firm: T::AccountId,
@@ -625,10 +606,6 @@ impl<T: Trait> Module<T> {
 	) -> Result {
 
 		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
-
-		// calculate the total price for this transfer
-		let total_price = max_price.checked_mul(&Self::u64_to_balance(amount.clone()))
-			.ok_or("[Error]overflow in calculating total price")?;
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_buy_order = BuyOrder {
@@ -642,9 +619,6 @@ impl<T: Trait> Module<T> {
 		<BuyOrdersList<T>>::mutate(&firm, |buy_orders_list| {
 			buy_orders_list.push(make_buy_order.clone())
 		});
-
-		// reserve the total value of the order to make sure the owner has the money
-		<balances::Module<T>>::reserve(&owner, total_price)?;
 
 		Self::deposit_event(RawEvent::SubmittedBuyOrder(
 			owner, firm, amount, max_price, new_hash,
