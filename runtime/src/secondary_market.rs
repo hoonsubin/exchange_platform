@@ -154,9 +154,6 @@ decl_module! {
 									amount: shares_selling,
 									order_id: Self::generate_hash(sender.clone()),
 								};
-								let _total_price = order.max_price
-									.checked_mul(&Self::u64_to_balance(shares_selling))
-									.ok_or("[Error]overflow in calculating total price")?;
 
 								// add the adjusted order to the list
 								temp_buy_orders_list.push(new_buy_order);
@@ -183,6 +180,7 @@ decl_module! {
 				min_price,
 				remaining_shares)?;
 			}
+			
 			Ok(())
 		}
 
