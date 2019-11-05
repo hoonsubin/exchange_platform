@@ -1,4 +1,7 @@
 //     Blockchain Stock Exchange Platform Secondary Market
+//     This runtime module will attempt to emulate the traditional secondary market
+//     in stock exchange market
+
 //     Copyright (C) 2019  Hoon KIM
 
 //     This program is free software: you can redistribute it and/or modify
@@ -145,7 +148,6 @@ decl_module! {
 					}
 					// check if the order of the share is enough
 					else if order.amount <= remaining_shares {
-						
 						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(order.amount))
 							.ok_or("[Error]overflow in calculating total price")?;
 
@@ -157,7 +159,8 @@ decl_module! {
 						match Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price) {
 							Err(_e) => continue,
 							Ok(_v) => {
-								remaining_shares = remaining_shares.checked_sub(order.amount).ok_or("[Error]underflow while subtracting new shares")?;
+								remaining_shares = remaining_shares.checked_sub(order.amount)
+									.ok_or("[Error]underflow while subtracting new shares")?;
 								// remove the current order from the master list once the transaction is done
 								temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
 							},
@@ -178,7 +181,6 @@ decl_module! {
 							Ok(_v) => {
 								let shares_selling = order.amount.checked_sub(remaining_shares)
 									.ok_or("[Error]underflow while calculating left shares")?;
-								
 								// remove the current order from the master list once the transaction is done
 								// we are not using the private put_buy_order function because we don't want to
 								//put this order on the master list yet
@@ -194,11 +196,10 @@ decl_module! {
 
 								// get the total amount of cash to reserve
 								let _total_amount = order.max_price.checked_mul(&Self::u64_to_balance(shares_selling))
-									.ok_or("[Error]")?;
-								
+									.ok_or("[Error]overflow while calculating total price")?;
 								// reserve the cash
 								T::Currency::reserve(&order.owner, _total_amount)
-									.map_err(|_| "locker can't afford to lock the amount requested")?;
+									.map_err(|_| "[Error]locker can't afford to lock the amount requested")?;
 
 								// add the adjusted order to the list
 								temp_buy_orders_list.push(new_buy_order);
@@ -225,7 +226,6 @@ decl_module! {
 				min_price,
 				remaining_shares)?;
 			}
-			
 			Ok(())
 		}
 
@@ -277,6 +277,7 @@ decl_module! {
 								match Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price) {
 									Err(_e) => continue,
 									Ok(_v) => {
+										// subtract remaing shares to buy after the transfer is over
 										remaining_shares_to_buy = remaining_shares_to_buy.checked_sub(order.amount)
 											.ok_or("[Error]underflow while subtracting new shares")?;
 
@@ -388,11 +389,12 @@ decl_module! {
 		/// This will not change the number of floating shares.
 		pub fn change_authorized_shares(origin, firm: T::AccountId, new_limit: u64) -> Result {
 			let sender = ensure_signed(origin)?;
-			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
+			ensure!(sender.clone() == <sudo::Module<T>>::key(),
+				"[Error]the caller must have sudo key to give rights");
 			ensure!(<IsAllowedIssue<T>>::get(&firm), "[Error]the firm is not allowed to issue shares");
 			ensure!(sender != firm.clone(), "[Error]you cannot change your own issue limit");
-			ensure!(new_limit > Self::floating_shares(&firm), "[Error]the firm cannot limit shares \
-				less than the already issued amount");
+			ensure!(new_limit > Self::floating_shares(&firm),
+				"[Error]the firm cannot limit shares less than the already issued amount");
 
 			<AuthorizedShares<T>>::insert(firm.clone(), new_limit);
 
@@ -648,8 +650,7 @@ impl<T: Trait> Module<T> {
 		max_price: BalanceOf<T>,
 		amount: u64,
 	) -> Result {
-
-		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
+		ensure!(Self::issuer_list().contains(&firm),"[Error]the firm does not exists");
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_buy_order = BuyOrder {
