@@ -101,11 +101,7 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
-		pub fn unreserve_currency(origin, amount: BalanceOf<T>) -> Result {
-			let sender = ensure_signed(origin)?;
-			T::Currency::unreserve(&sender, amount);
-			Ok(())
-		}
+		//todo: add block time expiration of orders, and cancel order function 
 
 		/// Searches the current buy orders and see if there is a price match for the transaction.
 		/// If there are no buy orders, this will create a new sell order which will be checked by the
@@ -277,7 +273,7 @@ decl_module! {
 								match Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price) {
 									Err(_e) => continue,
 									Ok(_v) => {
-										// subtract remaing shares to buy after the transfer is over
+										// subtract remaining shares to buy after the transfer is over
 										remaining_shares_to_buy = remaining_shares_to_buy.checked_sub(order.amount)
 											.ok_or("[Error]underflow while subtracting new shares")?;
 
@@ -559,22 +555,30 @@ impl<T: Trait> Module<T> {
 		amount_to_send: u64,
 		price_per_share: BalanceOf<T>,
 	) -> Result {
+
 		// the owned shares for the sender
 		let shares_before_trans = Self::owned_shares((from.clone(), firm.clone()));
 		// calculate the total price for this transfer
 		let total_price = price_per_share
 			.checked_mul(&Self::u64_to_balance(amount_to_send))
 			.ok_or("[Error]overflow in calculating total price")?;
-		ensure!(shares_before_trans >= amount_to_send, "[Error]you do not own enough shares so send");
 
 		let shares_subbed = shares_before_trans
 			.checked_sub(amount_to_send)
-			.ok_or("[Error]underflow while subtracting shares")?;
+			.ok_or("[Error]underflow while subtracting shares. You don't own enough shares")?;
 
-		let shares_added = Self::owned_shares((to.clone(), firm.clone()))
+		// this part shows a bug where if the `to` and `from` is the same, the share number doubles
+		let mut shares_added = Self::owned_shares((to.clone(), firm.clone()))
 			.checked_add(amount_to_send)
 			.ok_or("[Error]overflow while adding shares")?;
-
+		
+		//* this is a very hacky, temporary solution to address the share dup bug
+		//* try finding a better solution if possible
+		if &from == &to { // if the caller is sending the shares to itself
+			// we don;t change the value of the share
+			shares_added = shares_before_trans;
+		}
+		
 		// the account receiving the share will send the money to the person sending it
 		T::Currency::transfer(&to, &from, total_price)?;
 
