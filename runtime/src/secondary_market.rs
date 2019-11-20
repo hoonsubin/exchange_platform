@@ -84,7 +84,7 @@ decl_storage! {
 		AuthorizedShares get(authorized_shares): map T::AccountId => u64;
 
 		/// The market freeze state. Making this true will stop all further exchange
-		MarketFreeze get(market_freeze): bool = false;
+		CloseMarket get(market_closed): bool = false;
 
 		/// The list of sell orders for a particular company's account
 		SellOrdersList get(sell_order_list): map T::AccountId => Vec<SellOrder<T::AccountId, BalanceOf<T>, T::Hash>>;
@@ -109,7 +109,7 @@ decl_module! {
 		pub fn put_sell_order(origin, firm: T::AccountId, amount: u64, min_price: BalanceOf<T>) -> Result {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
-			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
+			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
 			ensure!(Self::balance_to_u64(min_price.clone()) > 0, "[Error]you cannot sell for 0");
 			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount,
 				"[Error]you do not own enough shares of this company");
@@ -152,7 +152,7 @@ decl_module! {
 
 						// then send all the buyer's requested amount to the buyer
 						// pattern match so we can move on to the next order when there is an error
-						match Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price) {
+						match Self::process_order(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price) {
 							Err(_e) => continue,
 							Ok(_v) => {
 								remaining_shares = remaining_shares.checked_sub(order.amount)
@@ -172,7 +172,7 @@ decl_module! {
 						T::Currency::unreserve(&order.owner, total_price);
 
 						// pattern match so we can move on to the next order when there is an error
-						match Self::transfer_share(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
+						match Self::process_order(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
 							Err(_e) => continue,
 							Ok(_v) => {
 								let shares_selling = order.amount.checked_sub(remaining_shares)
@@ -231,7 +231,7 @@ decl_module! {
 		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: BalanceOf<T>) -> Result {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
-			ensure!(!Self::market_freeze(), "[Error]the market is frozen right now");
+			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
 			ensure!(Self::balance_to_u64(max_price.clone()) > 0, "[Error]you cannot buy for 0");
 
 			// check if the caller has enough balance
@@ -270,7 +270,7 @@ decl_module! {
 							Err(_e) => continue,
 							Ok(_v) => {
 								// transfer the shares to the caller
-								match Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price) {
+								match Self::process_order(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price) {
 									Err(_e) => continue,
 									Ok(_v) => {
 										// subtract remaining shares to buy after the transfer is over
@@ -294,7 +294,7 @@ decl_module! {
 							Err(_e) => continue,
 							Ok(_v) => {
 								// transfer the shares to the caller
-								match Self::transfer_share(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price) {
+								match Self::process_order(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price) {
 									Err(_e) => continue,
 									Ok(_v) => {
 										// make a new sell order with the subtracted amount
@@ -464,29 +464,29 @@ decl_module! {
 			Ok(())
 		}
 
-		/// Changes the `MarketFreeze` storage value to true. This will prevent any trading from happening.
+		/// Changes the `CloseMarket` storage value to true. This will prevent any trading from happening.
 		/// Only accounts with sudo keys can call this
-		pub fn freeze_market(origin) -> Result {
+		pub fn close_market(origin) -> Result {
 			let sender = ensure_signed(origin)?;
 			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 
-			ensure!(!Self::market_freeze(), "[Error]the market is already frozen");
+			ensure!(!Self::market_closed(), "[Error]the market is already frozen");
 
-			<MarketFreeze<T>>::put(true);
+			<CloseMarket<T>>::put(true);
 			Self::deposit_event(RawEvent::MarketFrozen(sender, true));
 
 			Ok(())
 		}
 
-		/// Changes the `MarketFreeze` storage value to false. This will allow all trades to happen.
+		/// Changes the `CloseMarket` storage value to false. This will allow all trades to happen.
 		/// Only accounts with sudo keys can call this
-		pub fn unfreeze_market(origin) -> Result {
+		pub fn open_market(origin) -> Result {
 			let sender = ensure_signed(origin)?;
 			ensure!(sender.clone() == <sudo::Module<T>>::key(), "[Error]the caller must have sudo key to give rights");
 
-			ensure!(Self::market_freeze(), "[Error]the market is already not frozen");
+			ensure!(Self::market_closed(), "[Error]the market is already not frozen");
 
-			<MarketFreeze<T>>::put(false);
+			<CloseMarket<T>>::put(false);
 			Self::deposit_event(RawEvent::MarketFrozen(sender, false));
 
 			Ok(())
@@ -548,7 +548,7 @@ impl<T: Trait> Module<T> {
 	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId.
 	/// And the `to` account will send the `price_per_share` to the `from` account.
 	/// This function handles safe maths, transfer of shares, transfer of coins, and updates last bid price storage
-	fn transfer_share(
+	fn process_order(
 		from: T::AccountId,
 		to: T::AccountId,
 		firm: T::AccountId,
