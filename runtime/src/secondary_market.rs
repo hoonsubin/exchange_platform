@@ -32,22 +32,24 @@ use system::ensure_signed;
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "std", derive(Debug))]
-pub struct BuyOrder<AccountId, Balance, Hash> {
+pub struct BuyOrder<AccountId, Balance, Hash, BlockNumber> {
 	firm: AccountId,
 	owner: AccountId,
 	max_price: Balance,
 	amount: u64,
 	order_id: Hash,
+	expire: BlockNumber,
 }
 
 #[derive(Encode, Decode, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "std", derive(Debug))]
-pub struct SellOrder<AccountId, Balance, Hash> {
+pub struct SellOrder<AccountId, Balance, Hash, BlockNumber> {
 	firm: AccountId,
 	owner: AccountId,
 	min_price: Balance,
 	amount: u64,
 	order_id: Hash,
+	expire: BlockNumber,
 }
 
 pub trait Trait: system::Trait + sudo::Trait {
@@ -87,10 +89,16 @@ decl_storage! {
 		CloseMarket get(market_closed): bool = false;
 
 		/// The list of sell orders for a particular company's account
-		SellOrdersList get(sell_order_list): map T::AccountId => Vec<SellOrder<T::AccountId, BalanceOf<T>, T::Hash>>;
+		SellOrdersList get(sell_orders_list): map T::AccountId => Vec<SellOrder<T::AccountId, BalanceOf<T>, T::Hash, T::BlockNumber>>;
 
 		/// The list of buy orders for a particular company's account
-		BuyOrdersList get(buy_orders_list): map T::AccountId => Vec<BuyOrder<T::AccountId, BalanceOf<T>, T::Hash>>;
+		BuyOrdersList get(buy_orders_list): map T::AccountId => Vec<BuyOrder<T::AccountId, BalanceOf<T>, T::Hash, T::BlockNumber>>;
+
+		/// List of sell order that are expiring in the given block number
+		SellOrdersExpiring get(sell_order_expiring): map T::BlockNumber => Vec<SellOrder<T::AccountId, BalanceOf<T>, T::Hash, T::BlockNumber>>;
+
+		/// List of buy order that are expiring in the given block number
+		BuyOrdersExpiring get(buy_order_expiring): map T::BlockNumber => Vec<BuyOrder<T::AccountId, BalanceOf<T>, T::Hash, T::BlockNumber>>;
 
 		/// A nonce value used for generating random values
 		Nonce get(nonce): u64 = 0;
@@ -101,12 +109,10 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
-		//todo: add block time expiration of orders, and cancel order function 
-
 		/// Searches the current buy orders and see if there is a price match for the transaction.
 		/// If there are no buy orders, this will create a new sell order which will be checked by the
 		/// other traders who call put_buy_order function.
-		pub fn put_sell_order(origin, firm: T::AccountId, amount: u64, min_price: BalanceOf<T>) -> Result {
+		pub fn put_sell_order(origin, firm: T::AccountId, amount: u64, min_price: BalanceOf<T>, until: T::BlockNumber) -> Result {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
@@ -130,7 +136,7 @@ decl_module! {
 			let mut remaining_shares = amount;
 
 			// check if the number orders are greater than 0
-			if temp_buy_orders_list.len() > 0 {
+			if !temp_buy_orders_list.is_empty() {
 
 				// sort the vector from lower max_price to high
 				temp_buy_orders_list.sort_by(|a, b| a.max_price.cmp(&b.max_price));
@@ -188,6 +194,7 @@ decl_module! {
 									max_price: order.max_price,
 									amount: shares_selling,
 									order_id: Self::generate_hash(sender.clone()),
+									expire: order.expire,
 								};
 
 								// get the total amount of cash to reserve
@@ -220,7 +227,8 @@ decl_module! {
 				firm.clone(),
 				sender.clone(),
 				min_price,
-				remaining_shares)?;
+				remaining_shares,
+				until)?;
 			}
 			Ok(())
 		}
@@ -228,7 +236,7 @@ decl_module! {
 		/// Searches the current sell orders and see if there is a price match for the transaction.
 		/// If there are no sell orders, this will create a new buy order which will be checked by the
 		/// other traders who call put_sell_order function.
-		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: BalanceOf<T>) -> Result {
+		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: BalanceOf<T>, until: T::BlockNumber) -> Result {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
@@ -240,7 +248,7 @@ decl_module! {
 			ensure!(T::Currency::free_balance(&sender) >= total_price,
 				"[Error]you don't have enough free balance for this trade");
 			// create two copies of the master list.
-			let mut temp_sell_list = Self::sell_order_list(&firm);
+			let mut temp_sell_list = Self::sell_orders_list(&firm);
 			let mut new_sell_list = temp_sell_list.clone();
 
 			// make a new list of all the orders that are not going to be mutated
@@ -254,7 +262,7 @@ decl_module! {
 			let mut remaining_shares_to_buy = amount;
 
 			// check if the number of valid orders are greater than 0
-			if temp_sell_list.len() > 0 {
+			if !temp_sell_list.is_empty() {
 				// sort the vector from highest min_price to low
 				temp_sell_list.sort_by(|a, b| b.min_price.cmp(&a.min_price));
 
@@ -303,7 +311,8 @@ decl_module! {
 											owner: order.owner,
 											min_price: order.min_price,
 											amount: share_left,
-											order_id: Self::generate_hash(sender.clone())
+											order_id: Self::generate_hash(sender.clone()),
+											expire: order.expire,
 										};
 
 										// push (add to the last index) the newly adjusted sell order to the master list
@@ -331,7 +340,8 @@ decl_module! {
 				firm.clone(),
 				sender.clone(),
 				max_price,
-				remaining_shares_to_buy)?;
+				remaining_shares_to_buy,
+				until)?;
 			}
 			Ok(())
 		}
@@ -491,6 +501,73 @@ decl_module! {
 
 			Ok(())
 		}
+
+		// run after every runtime function
+		fn on_finalize() {
+			//todo: implement the following function
+			// get the list of all the orders that are going to be expiring this block
+			// check if there are any orders that have been expired (if not; don't do anything)
+			// give back the shares/money that is in the order to the owners
+			// insert the list without the expired orders to blockchain storage
+			let current_block = <system::Module<T>>::block_number();
+
+			let buy_orders_expiring = Self::buy_order_expiring(current_block);
+			let sell_orders_expiring = Self::sell_order_expiring(current_block);
+			let issuers = Self::issuer_list();
+
+			for firm in issuers {
+				if !buy_orders_expiring.is_empty() {
+					// get all the buy orders from the current issuer
+					let mut buy_order_vec = Self::buy_orders_list(&firm);
+
+					// only get the orders that are expiring this block
+					let mut expiring_orders = buy_order_vec.clone();
+					expiring_orders.retain(|x| x.expire <= current_block);
+
+					if !expiring_orders.is_empty() {
+						for order in expiring_orders {
+							let total_price = order.max_price.checked_mul(&Self::u64_to_balance(order.amount))
+								.expect("the data type for the currency is u128 and the type for amount is u64");
+						
+							// unreserve the balance for this order
+							T::Currency::unreserve(&order.owner, total_price);
+							Self::deposit_event(RawEvent::BuyOrderExpired(order.owner.clone(), order.firm.clone(), total_price));
+						}
+	
+						// get the orders expiring buying this firm's share
+						buy_order_vec.retain(|x| x.expire > current_block);
+	
+						<BuyOrdersList<T>>::insert(&firm, &buy_order_vec);
+					}
+				}
+
+				if !sell_orders_expiring.is_empty() {
+					let mut sell_order_vec = Self::sell_orders_list(&firm);
+
+					// only get the orders that are expiring this block
+					let mut expiring_orders = sell_order_vec.clone();
+					expiring_orders.retain(|x| x.expire <= current_block);
+
+					if !expiring_orders.is_empty() {
+						for order in expiring_orders {
+							Self::unlock_shares(order.owner.clone(), order.firm.clone(), order.amount)
+								.expect("I really hope this works lol");
+						}
+	
+						sell_order_vec.retain(|x| x.expire > current_block);
+						// update the blockchain storage list
+						<SellOrdersList<T>>::insert(&firm, &sell_order_vec);
+					}
+					
+				}
+
+				// break the loop with there are no expiring orders in this list
+				if sell_orders_expiring.is_empty() && buy_orders_expiring.is_empty() {
+					break;
+				}
+			}
+			
+		}
 	}
 }
 
@@ -507,7 +584,10 @@ impl<T: Trait> Module<T> {
 		// get the currently owned amount
 		let owned = Self::owned_shares((owner.clone(), firm.clone()));
 
-		ensure!(owned >= amount, "[Error]the account does not hold enough shares");
+		ensure!(
+			owned >= amount,
+			"[Error]the account does not hold enough shares"
+		);
 		// check how much will be left after the lock
 		let left_shares = owned
 			.checked_sub(amount)
@@ -527,7 +607,10 @@ impl<T: Trait> Module<T> {
 	/// Unlocking shares will transfer the locked shares to the owned shares
 	fn unlock_shares(owner: T::AccountId, firm: T::AccountId, amount: u64) -> Result {
 		let locked = Self::locked_shares((owner.clone(), firm.clone()));
-		ensure!(locked >= amount, "[Error]cannot unlock more than what is locked");
+		ensure!(
+			locked >= amount,
+			"[Error]cannot unlock more than what is locked"
+		);
 
 		// locked - amount
 		let subbed_locked = locked
@@ -555,7 +638,6 @@ impl<T: Trait> Module<T> {
 		amount_to_send: u64,
 		price_per_share: BalanceOf<T>,
 	) -> Result {
-
 		// the owned shares for the sender
 		let shares_before_trans = Self::owned_shares((from.clone(), firm.clone()));
 		// calculate the total price for this transfer
@@ -571,14 +653,13 @@ impl<T: Trait> Module<T> {
 		let mut shares_added = Self::owned_shares((to.clone(), firm.clone()))
 			.checked_add(amount_to_send)
 			.ok_or("[Error]overflow while adding shares")?;
-		
 		//* this is a very hacky, temporary solution to address the share dup bug
 		//* try finding a better solution if possible
-		if &from == &to { // if the caller is sending the shares to itself
+		if &from == &to {
+			// if the caller is sending the shares to itself
 			// we don;t change the value of the share
 			shares_added = shares_before_trans;
 		}
-		
 		// the account receiving the share will send the money to the person sending it
 		T::Currency::transfer(&to, &from, total_price)?;
 
@@ -621,8 +702,12 @@ impl<T: Trait> Module<T> {
 		owner: T::AccountId,
 		min_price: BalanceOf<T>,
 		amount: u64,
+		until: T::BlockNumber,
 	) -> Result {
-		ensure!(Self::issuer_list().contains(&firm), "[Error]the firm does not exists");
+		ensure!(
+			Self::issuer_list().contains(&firm),
+			"[Error]the firm does not exists"
+		);
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_sell_order = SellOrder {
@@ -631,10 +716,15 @@ impl<T: Trait> Module<T> {
 			min_price: min_price,
 			amount: amount,
 			order_id: new_hash.clone(),
+			expire: until,
 		};
 		// add the order to the blockchain storage list
-		<SellOrdersList<T>>::mutate(&firm, |sell_order_list| {
-			sell_order_list.push(make_sell_order.clone())
+		<SellOrdersList<T>>::mutate(&firm, |sell_orders_list| {
+			sell_orders_list.push(make_sell_order.clone())
+		});
+
+		<SellOrdersExpiring<T>>::mutate(&until, |sell_orders_list| {
+			sell_orders_list.push(make_sell_order.clone())
 		});
 
 		// lock the shares
@@ -653,8 +743,12 @@ impl<T: Trait> Module<T> {
 		owner: T::AccountId,
 		max_price: BalanceOf<T>,
 		amount: u64,
+		until: T::BlockNumber,
 	) -> Result {
-		ensure!(Self::issuer_list().contains(&firm),"[Error]the firm does not exists");
+		ensure!(
+			Self::issuer_list().contains(&firm),
+			"[Error]the firm does not exists"
+		);
 
 		let new_hash = Self::generate_hash(from.clone());
 		let make_buy_order = BuyOrder {
@@ -663,6 +757,7 @@ impl<T: Trait> Module<T> {
 			max_price: max_price,
 			amount: amount,
 			order_id: new_hash.clone(),
+			expire: until,
 		};
 
 		let total_price = max_price
@@ -675,6 +770,10 @@ impl<T: Trait> Module<T> {
 
 		// add the order to the blockchain storage list
 		<BuyOrdersList<T>>::mutate(&firm, |buy_orders_list| {
+			buy_orders_list.push(make_buy_order.clone())
+		});
+
+		<BuyOrdersExpiring<T>>::mutate(&until, |buy_orders_list| {
 			buy_orders_list.push(make_buy_order.clone())
 		});
 
@@ -709,5 +808,9 @@ decl_event!(
 		LockedShares(AccountId, AccountId, u64),
 		// parameters are owner, issuer (firm), amount
 		UnlockedShares(AccountId, AccountId, u64),
+		// parameters are owner, issuer (firm), max price
+		BuyOrderExpired(AccountId, AccountId, Balance),
+		// parameters are owner, issuer (firm), amount
+		SellOrderExpired(AccountId, AccountId, u64),
 	}
 );
