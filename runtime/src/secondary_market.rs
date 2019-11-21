@@ -111,8 +111,8 @@ decl_module! {
 
 		/// Searches the current buy orders and see if there is a price match for the transaction.
 		/// If there are no buy orders, this will create a new sell order which will be checked by the
-		/// other traders who call put_buy_order function.
-		pub fn put_sell_order(origin, firm: T::AccountId, amount: u64, min_price: BalanceOf<T>, until: T::BlockNumber) -> Result {
+		/// other traders who call place_buy_order function.
+		pub fn place_sell_order(origin, firm: T::AccountId, amount: u64, min_price: BalanceOf<T>, until: T::BlockNumber) -> Result {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
@@ -159,7 +159,7 @@ decl_module! {
 
 						// then send all the buyer's requested amount to the buyer
 						// pattern match so we can move on to the next order when there is an error
-						match Self::process_order(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price) {
+						match Self::execute_order(sender.clone(), order.owner.clone(), firm.clone(), order.amount, order.max_price) {
 							Err(_e) => continue,
 							Ok(_v) => {
 								remaining_shares = remaining_shares.checked_sub(order.amount)
@@ -179,7 +179,7 @@ decl_module! {
 						T::Currency::unreserve(&order.owner, total_price);
 
 						// pattern match so we can move on to the next order when there is an error
-						match Self::process_order(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
+						match Self::execute_order(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
 							Err(_e) => continue,
 							Ok(_v) => {
 								let shares_selling = order.amount.checked_sub(remaining_shares)
@@ -236,8 +236,8 @@ decl_module! {
 
 		/// Searches the current sell orders and see if there is a price match for the transaction.
 		/// If there are no sell orders, this will create a new buy order which will be checked by the
-		/// other traders who call put_sell_order function.
-		pub fn put_buy_order(origin, firm: T::AccountId, amount: u64, max_price: BalanceOf<T>, until: T::BlockNumber) -> Result {
+		/// other traders who call place_sell_order function.
+		pub fn place_buy_order(origin, firm: T::AccountId, amount: u64, max_price: BalanceOf<T>, until: T::BlockNumber) -> Result {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
@@ -280,7 +280,7 @@ decl_module! {
 							Err(_e) => continue,
 							Ok(_v) => {
 								// transfer the shares to the caller
-								match Self::process_order(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price) {
+								match Self::execute_order(order.owner.clone(), sender.clone(), firm.clone(), order.amount, order.min_price) {
 									Err(_e) => continue,
 									Ok(_v) => {
 										// subtract remaining shares to buy after the transfer is over
@@ -304,7 +304,7 @@ decl_module! {
 							Err(_e) => continue,
 							Ok(_v) => {
 								// transfer the shares to the caller
-								match Self::process_order(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price) {
+								match Self::execute_order(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price) {
 									Err(_e) => continue,
 									Ok(_v) => {
 										// make a new sell order with the subtracted amount
@@ -628,7 +628,7 @@ impl<T: Trait> Module<T> {
 	/// Transfers the given `amount` of shares of the given `firm`, to the `to` AccountId.
 	/// And the `to` account will send the `price_per_share` to the `from` account.
 	/// This function handles safe maths, transfer of shares, transfer of coins, and updates last bid price storage
-	fn process_order(
+	fn execute_order(
 		from: T::AccountId,
 		to: T::AccountId,
 		firm: T::AccountId,
