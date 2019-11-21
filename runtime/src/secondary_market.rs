@@ -116,6 +116,7 @@ decl_module! {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
+			ensure!(until > <system::Module<T>>::block_number(), "[Error]you cannot set the expiration block lower than the current block");
 			ensure!(Self::balance_to_u64(min_price.clone()) > 0, "[Error]you cannot sell for 0");
 			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount,
 				"[Error]you do not own enough shares of this company");
@@ -240,6 +241,7 @@ decl_module! {
 			let sender = ensure_signed(origin)?;
 			// all the other checks will be done within other functions, so we only check this
 			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
+			ensure!(until > <system::Module<T>>::block_number(), "[Error]you cannot set the expiration block lower than the current block");
 			ensure!(Self::balance_to_u64(max_price.clone()) > 0, "[Error]you cannot buy for 0");
 
 			// check if the caller has enough balance
@@ -504,11 +506,6 @@ decl_module! {
 
 		// run after every runtime function
 		fn on_finalize() {
-			//todo: implement the following function
-			// get the list of all the orders that are going to be expiring this block
-			// check if there are any orders that have been expired (if not; don't do anything)
-			// give back the shares/money that is in the order to the owners
-			// insert the list without the expired orders to blockchain storage
 			let current_block = <system::Module<T>>::block_number();
 
 			let buy_orders_expiring = Self::buy_order_expiring(current_block);
