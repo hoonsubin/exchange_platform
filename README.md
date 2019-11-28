@@ -6,8 +6,6 @@
  - It only supports sell/buy limit order. Market order is technically
    possible if there are enough traders and transactions in the market,
    but for now I only track the market value.
- - There is no order limit or order expiration now, but it is quite easy
-   to implement that later. But am i gonna?! (yes eventually)
 
 ## Public Functions
 
