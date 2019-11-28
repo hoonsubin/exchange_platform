@@ -109,6 +109,13 @@ decl_module! {
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event<T>() = default;
 
+		// this function is only for quick testing
+		pub fn unreserve_currency(origin, amount: BalanceOf<T>){
+			let sender = ensure_signed(origin)?;
+
+			T::Currency::unreserve(&sender, amount);
+		}
+
 		/// Searches the current buy orders and see if there is a price match for the transaction.
 		/// If there are no buy orders, this will create a new sell order which will be checked by the
 		/// other traders who call place_buy_order function.
@@ -166,28 +173,39 @@ decl_module! {
 									.ok_or("[Error]underflow while subtracting new shares")?;
 								// remove the current order from the master list once the transaction is done
 								temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
+
+								<BuyOrdersExpiring<T>>::mutate(&until, |buy_orders_list| {
+									buy_orders_list.retain(|x| x.order_id != order.order_id)
+								});
 							},
 						}
 					}
 					// if the amount of buy is greater than the amount to sell
 					else if order.amount > remaining_shares {
-
-						let total_price = order.max_price.checked_mul(&Self::u64_to_balance(order.amount))
+						
+						let total_reserve = order.max_price.checked_mul(&Self::u64_to_balance(order.amount))
 							.ok_or("[Error]overflow in calculating total price")?;
-
-						// unreserve the balance
-						T::Currency::unreserve(&order.owner, total_price);
+						
+						// unreserve the entire balance from the order
+						T::Currency::unreserve(&order.owner, total_reserve);
 
 						// pattern match so we can move on to the next order when there is an error
 						match Self::execute_order(sender.clone(), order.owner.clone(), firm.clone(), remaining_shares, order.max_price) {
 							Err(_e) => continue,
 							Ok(_v) => {
+
 								let shares_selling = order.amount.checked_sub(remaining_shares)
 									.ok_or("[Error]underflow while calculating left shares")?;
+								
+								let total_price = order.max_price.checked_mul(&Self::u64_to_balance(shares_selling))
+									.ok_or("[Error]overflow in calculating total price")?;
+								
 								// remove the current order from the master list once the transaction is done
-								// we are not using the private put_buy_order function because we don't want to
-								//put this order on the master list yet
 								temp_buy_orders_list.retain(|x| x.order_id != order.order_id);
+
+								<BuyOrdersExpiring<T>>::mutate(&until, |buy_orders_list| {
+									buy_orders_list.retain(|x| x.order_id != order.order_id)
+								});
 
 								let new_buy_order = BuyOrder{
 									firm: order.firm,
@@ -198,15 +216,17 @@ decl_module! {
 									expire: order.expire,
 								};
 
-								// get the total amount of cash to reserve
-								let _total_amount = order.max_price.checked_mul(&Self::u64_to_balance(shares_selling))
-									.ok_or("[Error]overflow while calculating total price")?;
 								// reserve the cash
-								T::Currency::reserve(&order.owner, _total_amount)
+								T::Currency::reserve(&order.owner, total_price)
 									.map_err(|_| "[Error]locker can't afford to lock the amount requested")?;
 
 								// add the adjusted order to the list
-								temp_buy_orders_list.push(new_buy_order);
+								temp_buy_orders_list.push(new_buy_order.clone());
+
+								// add this mutated order to the expiring list
+								<BuyOrdersExpiring<T>>::mutate(&until, |buy_orders_list| {
+									buy_orders_list.push(new_buy_order.clone())
+								});
 								// break out of the for loop once the caller sold all the shares
 								break;
 							},
@@ -289,6 +309,10 @@ decl_module! {
 
 										// remove the current order from the master list once the transaction is done
 										temp_sell_list.retain(|x| x.order_id != order.order_id);
+
+										<SellOrdersExpiring<T>>::mutate(&until, |sell_orders_list| {
+											sell_orders_list.retain(|x| x.order_id != order.order_id)
+										});
 									},
 								}
 							},
@@ -307,6 +331,14 @@ decl_module! {
 								match Self::execute_order(order.owner.clone(), sender.clone(), firm.clone(), remaining_shares_to_buy, order.min_price) {
 									Err(_e) => continue,
 									Ok(_v) => {
+
+										// remove the current order from the master list once the transaction is done
+										temp_sell_list.retain(|x| x.order_id != order.order_id);
+
+										<SellOrdersExpiring<T>>::mutate(&until, |sell_orders_list| {
+											sell_orders_list.retain(|x| x.order_id != order.order_id)
+										});
+
 										// make a new sell order with the subtracted amount
 										let adjusted_sell_order = SellOrder {
 											firm: order.firm,
@@ -318,7 +350,13 @@ decl_module! {
 										};
 
 										// push (add to the last index) the newly adjusted sell order to the master list
-										temp_sell_list.push(adjusted_sell_order);
+										temp_sell_list.push(adjusted_sell_order.clone());
+
+										// add the mutated sell order to the expiring list
+										<SellOrdersExpiring<T>>::mutate(&until, |sell_orders_list| {
+											sell_orders_list.push(adjusted_sell_order)
+										});
+								
 									},
 								}
 							},
@@ -399,8 +437,8 @@ decl_module! {
 			let sender = ensure_signed(origin)?;
 			ensure!(sender.clone() == <sudo::Module<T>>::key(),
 				"[Error]the caller must have sudo key to give rights");
-			ensure!(<IsAllowedIssue<T>>::get(&firm), "[Error]the firm is not allowed to issue shares");
 			ensure!(sender != firm.clone(), "[Error]you cannot change your own issue limit");
+			ensure!(<IsAllowedIssue<T>>::get(&firm), "[Error]the firm is not allowed to issue shares");
 			ensure!(new_limit > Self::floating_shares(&firm),
 				"[Error]the firm cannot limit shares less than the already issued amount");
 
@@ -421,8 +459,7 @@ decl_module! {
 
 			let old_shares_outstanding = Self::floating_shares(&sender);
 
-			//let new_shares_outstanding = Self::floating_shares(&sender) + amount.clone();
-			let new_shares_outstanding = old_shares_outstanding.checked_add(amount.clone())
+			let new_shares_outstanding = old_shares_outstanding.checked_add(amount)
 				.ok_or("[Error]overflowing when issuing new shares")?;
 
 			ensure!(new_shares_outstanding < Self::authorized_shares(&sender),
@@ -434,7 +471,11 @@ decl_module! {
 			}
 
 			<FloatingShares<T>>::insert(&sender, new_shares_outstanding);
-			<OwnedShares<T>>::insert((sender.clone(), sender.clone()), amount.clone());
+
+			// add currently owned shares with the additional shares issued
+			let owned_shares_total = Self::owned_shares((sender.clone(), sender.clone())).checked_add(amount)
+				.ok_or("[Error]overflow when adding total owned shares")?;
+			<OwnedShares<T>>::insert((sender.clone(), sender.clone()), owned_shares_total);
 
 			Self::deposit_event(RawEvent::IssuedShares(sender, amount));
 
@@ -549,6 +590,8 @@ decl_module! {
 						for order in expiring_orders {
 							Self::unlock_shares(order.owner.clone(), order.firm.clone(), order.amount)
 								.expect("I really hope this works lol");
+							
+							Self::deposit_event(RawEvent::SellOrderExpired(order.owner.clone(), order.firm.clone(), order.amount));
 						}
 	
 						sell_order_vec.retain(|x| x.expire > current_block);
