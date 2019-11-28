@@ -470,12 +470,12 @@ decl_module! {
 				<IssuerList<T>>::mutate(|account| account.push(sender.clone()));
 			}
 
-			<FloatingShares<T>>::insert(&sender, new_shares_outstanding);
-
 			// add currently owned shares with the additional shares issued
 			let owned_shares_total = Self::owned_shares((sender.clone(), sender.clone())).checked_add(amount)
 				.ok_or("[Error]overflow when adding total owned shares")?;
+			
 			<OwnedShares<T>>::insert((sender.clone(), sender.clone()), owned_shares_total);
+			<FloatingShares<T>>::insert(&sender, new_shares_outstanding);
 
 			Self::deposit_event(RawEvent::IssuedShares(sender, amount));
 
@@ -501,12 +501,13 @@ decl_module! {
 			//let new_float = Self::floating_shares(&sender) - amount;
 			let new_float = Self::floating_shares(&sender).checked_sub(amount)
 				.ok_or("[Error]underflow while subtracting floating shares")?;
+			
+			// if the calling firm is in the firm list, and has no floating shares
 			if Self::is_firm(&sender) && new_float == 0{
 				let mut current_firms = Self::issuer_list();
 				current_firms.retain(|x| x != &sender);
 
 				<IssuerList<T>>::put(current_firms);
-
 			}
 
 			<OwnedShares<T>>::insert((sender.clone(), sender.clone()), new_amount);
