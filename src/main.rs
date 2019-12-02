@@ -17,7 +17,7 @@ fn run() -> cli::error::Result<()> {
 		executable_name: "exchange-platform",
 		author: "Hoon Kim",
 		description: "exchange_platform",
-		support_url: "support.anonymous.an",
+		support_url: "https://github.com/hoonsubin/exchange_platform",
 	};
 	cli::run(::std::env::args(), cli::Exit, version)
 }

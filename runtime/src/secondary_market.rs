@@ -30,7 +30,7 @@ use support::{
 };
 use system::ensure_signed;
 
-#[derive(Encode, Decode, Default, Clone, PartialEq)]
+#[derive(Encode, Decode, Default, Clone, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "std", derive(Debug))]
 pub struct BuyOrder<AccountId, Balance, Hash, BlockNumber> {
 	firm: AccountId,
@@ -41,7 +41,7 @@ pub struct BuyOrder<AccountId, Balance, Hash, BlockNumber> {
 	expire: BlockNumber,
 }
 
-#[derive(Encode, Decode, Default, Clone, PartialEq)]
+#[derive(Encode, Decode, Default, Clone, PartialEq, PartialOrd)]
 #[cfg_attr(feature = "std", derive(Debug))]
 pub struct SellOrder<AccountId, Balance, Hash, BlockNumber> {
 	firm: AccountId,
@@ -146,8 +146,9 @@ decl_module! {
 			// check if the number orders are greater than 0
 			if !temp_buy_orders_list.is_empty() {
 
-				// sort the vector from lower max_price to high
-				temp_buy_orders_list.sort_by(|a, b| a.max_price.cmp(&b.max_price));
+				// sort the vector from higher max_price to low
+				//todo: the ordering of the list can be enhanced to better satisfy both parties
+				temp_buy_orders_list.sort_by(|a, b| b.max_price.cmp(&a.max_price));
 
 				// we are cloning the master list because we will be making changes to it during the loop
 				for order in temp_buy_orders_list.clone() {
@@ -177,6 +178,8 @@ decl_module! {
 								<BuyOrdersExpiring<T>>::mutate(&until, |buy_orders_list| {
 									buy_orders_list.retain(|x| x.order_id != order.order_id)
 								});
+
+								runtime_io::print("[Debug]buy order fully satisfied");
 							},
 						}
 					}
@@ -216,6 +219,8 @@ decl_module! {
 									expire: order.expire,
 								};
 
+								remaining_shares = 0;
+
 								// reserve the cash
 								T::Currency::reserve(&order.owner, total_price)
 									.map_err(|_| "[Error]locker can't afford to lock the amount requested")?;
@@ -227,6 +232,9 @@ decl_module! {
 								<BuyOrdersExpiring<T>>::mutate(&until, |buy_orders_list| {
 									buy_orders_list.push(new_buy_order.clone())
 								});
+
+								runtime_io::print("[Debug]sell order partially satisfied (made new buy order)");
+
 								// break out of the for loop once the caller sold all the shares
 								break;
 							},
@@ -285,8 +293,9 @@ decl_module! {
 
 			// check if the number of valid orders are greater than 0
 			if !temp_sell_list.is_empty() {
-				// sort the vector from highest min_price to low
-				temp_sell_list.sort_by(|a, b| b.min_price.cmp(&a.min_price));
+				// sort the vector from lowest min_price to high
+				//todo: the ordering of the list can be enhanced to better satisfy both parties
+				temp_sell_list.sort_by(|a, b| a.min_price.cmp(&b.min_price));
 
 				for order in temp_sell_list.clone(){
 					// break the loop if the caller bought all the shares
@@ -313,6 +322,8 @@ decl_module! {
 										<SellOrdersExpiring<T>>::mutate(&until, |sell_orders_list| {
 											sell_orders_list.retain(|x| x.order_id != order.order_id)
 										});
+
+										runtime_io::print("[Debug]sell order fully satisfied");
 									},
 								}
 							},
@@ -349,6 +360,8 @@ decl_module! {
 											expire: order.expire,
 										};
 
+										remaining_shares_to_buy = 0;
+
 										// push (add to the last index) the newly adjusted sell order to the master list
 										temp_sell_list.push(adjusted_sell_order.clone());
 
@@ -356,13 +369,15 @@ decl_module! {
 										<SellOrdersExpiring<T>>::mutate(&until, |sell_orders_list| {
 											sell_orders_list.push(adjusted_sell_order)
 										});
-								
+
+										runtime_io::print("[Debug]buy order partially satisfied (made new sell order)");
+										
+										// break out of the for loop to combine the adjusted list
+										break;
 									},
 								}
 							},
 						}
-						// break out of the for loop to combine the adjusted list
-						break;
 					}
 				}
 				// combine the order list that wasn't touched, and the adjusted ones
@@ -570,7 +585,8 @@ decl_module! {
 						
 							// unreserve the balance for this order
 							T::Currency::unreserve(&order.owner, total_price);
-							Self::deposit_event(RawEvent::BuyOrderExpired(order.owner.clone(), order.firm.clone(), total_price));
+							Self::deposit_event(RawEvent::BuyOrderExpired(order.owner.clone(), order.firm.clone(), total_price, order.amount));
+							runtime_io::print("[Debug]buy order expired");
 						}
 	
 						// get the orders expiring buying this firm's share
@@ -591,8 +607,12 @@ decl_module! {
 						for order in expiring_orders {
 							Self::unlock_shares(order.owner.clone(), order.firm.clone(), order.amount)
 								.expect("I really hope this works lol");
+
+							let total_price = order.min_price.checked_mul(&Self::u64_to_balance(order.amount))
+								.expect("the data type for the currency is u128 and the type for amount is u64");
 							
-							Self::deposit_event(RawEvent::SellOrderExpired(order.owner.clone(), order.firm.clone(), order.amount));
+							Self::deposit_event(RawEvent::SellOrderExpired(order.owner.clone(), order.firm.clone(), total_price, order.amount));
+							runtime_io::print("[Debug]sell order expired");
 						}
 	
 						sell_order_vec.retain(|x| x.expire > current_block);
@@ -713,6 +733,7 @@ impl<T: Trait> Module<T> {
 		runtime_io::print("[Debug]transferred shares");
 
 		Self::deposit_event(RawEvent::TransferredShares(from, to, firm, amount_to_send));
+		runtime_io::print("[Debug]executed order");
 
 		Ok(())
 	}
@@ -774,6 +795,8 @@ impl<T: Trait> Module<T> {
 			owner, firm, amount, min_price, new_hash,
 		));
 
+		runtime_io::print("[Debug]placed sell order");
+
 		Ok(())
 	}
 
@@ -822,6 +845,8 @@ impl<T: Trait> Module<T> {
 			owner, firm, amount, max_price, new_hash,
 		));
 
+		runtime_io::print("[Debug]placed buy order");
+
 		Ok(())
 	}
 }
@@ -849,9 +874,9 @@ decl_event!(
 		LockedShares(AccountId, AccountId, u64),
 		// parameters are owner, issuer (firm), amount
 		UnlockedShares(AccountId, AccountId, u64),
-		// parameters are owner, issuer (firm), max price
-		BuyOrderExpired(AccountId, AccountId, Balance),
-		// parameters are owner, issuer (firm), amount
-		SellOrderExpired(AccountId, AccountId, u64),
+		// parameters are owner, issuer (firm), total price, amount
+		BuyOrderExpired(AccountId, AccountId, Balance, u64),
+		// parameters are owner, issuer (firm), total price, amount
+		SellOrderExpired(AccountId, AccountId, Balance, u64),
 	}
 );
