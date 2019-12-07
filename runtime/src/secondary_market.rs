@@ -125,7 +125,7 @@ decl_module! {
 			ensure!(!Self::market_closed(), "[Error]the market is frozen right now");
 			ensure!(until > <system::Module<T>>::block_number(), "[Error]you cannot set the expiration block lower than the current block");
 			ensure!(Self::balance_to_u64(min_price.clone()) > 0, "[Error]you cannot sell for 0");
-			ensure!(Self::owned_shares((firm.clone(), sender.clone())) >= amount,
+			ensure!(Self::owned_shares((sender.clone(), firm.clone())) >= amount,
 				"[Error]you do not own enough shares of this company");
 			// get the entire buy orders from the blockchain
 			// a mutable copy of the list that we will be making changes to
