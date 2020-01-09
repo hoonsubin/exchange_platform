@@ -1,3 +1,4 @@
+
 # Substrate Stock Exchange Platform
  A stock exchange platform made with substrate for undergrad thesis.
  
@@ -17,3 +18,19 @@
  - Retire shares
  - Freeze/unfreeze market (sudo)
 (sudo means the caller must have sudo keys)
+
+## How to run/hack the node
+
+First, use the following command to install Rust and the WASM toolchain
+
+    $ curl https://sh.rustup.rs -sSf | sh
+    $ rustup target add wasm32-unknown-unknown --toolchain nightly
+
+Next, use the following command to build the node
+
+    $ ./exchange_platform/scripts/build.sh && cargo build --release
+
+You can run the developer node with the following command
+
+    $ ./exchange_platform/target/release/exchange_platform --dev
+Happy hacking!
